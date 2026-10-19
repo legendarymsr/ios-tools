@@ -3,6 +3,11 @@
 #   check-sep.py rom  AppleSEPROM-Cebu-B1
 #   check-sep.py dec  sep-firmware.n104.RELEASE            (decrypted payload)
 #   check-sep.py fw   sep-firmware.n104.RELEASE.new.img4 [original .im4p]
+#   check-sep.py wrap ORIG.im4p DECRYPTED sep_root_ticket.der OUT.img4
+#     builds the IMG4 the ChefKiss guide makes with "img4 -A -F ... -T rsep -V
+#     <img4 -v output>", but in Python: xerub's img4lib only byte-swaps the
+#     fourcc when __LITTLE_ENDIAN__/__x86_64__ is defined, so a GCC build on
+#     arm64 Linux writes the type as 'pesr' instead of 'rsep'.
 # Exit 0 = looks right, 1 = bad (reason on stderr). A bad SEP ROM or SEP
 # firmware makes the restore ramdisk panic in the SEP DART (ChefKiss FAQ:
 # "dart-sep ... DART(DART) error" = "User error; bad SEP ROM or SEP Firmware";
@@ -98,6 +103,46 @@ def check_fw(path, orig=None):
           (len(p['payload']) // 1024))
 
 
+def der(tag, value):
+    n = len(value)
+    if n < 0x80:
+        head = bytes([n])
+    else:
+        nb = n.to_bytes((n.bit_length() + 7) // 8, 'big')
+        head = bytes([0x80 | len(nb)]) + nb
+    return bytes([tag]) + head + value
+
+
+def wrap(orig, dec, ticket, out):
+    ob = open(orig, 'rb').read()
+    try:
+        _, ovs, ove = tlv(ob, 0)
+        o = parse_im4p(ob, ovs, ove)
+    except (ValueError, IndexError) as ex:
+        bad('%s: cannot parse the original IM4P (%s)' % (orig, ex))
+    payload = open(dec, 'rb').read()
+    if not is_sepos(payload):
+        bad('%s is not a decrypted SEPOS - the SEP IV/Key is wrong for this build' % dec)
+    m = open(ticket, 'rb').read()
+    try:
+        t, _, mve = tlv(m, 0)
+        mk = children(m, *tlv(m, 0)[1:])
+        if t != 0x30 or mve != len(m) or m[mk[0][2]:mk[0][3]] != b'IM4M':
+            raise ValueError('not an IM4M')
+    except (ValueError, IndexError) as ex:
+        bad('%s: not a SEP ticket (%s) - delete it and re-run step 4' % (ticket, ex))
+    # IMG4 ::= SEQ { "IMG4", IM4P, [0] IM4M }   IM4P ::= SEQ { "IM4P", type, version, payload }
+    im4p = der(0x30, der(0x16, b'IM4P') + der(0x16, b'rsep') +
+               der(0x16, o['version']) + der(0x04, payload))
+    img4 = der(0x30, der(0x16, b'IMG4') + im4p + der(0xa0, m))
+    tmp = out + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(img4)
+    os.replace(tmp, out)
+    print('[*] wrote %s (rsep, %d KiB payload, version string %d chars)' %
+          (out, len(payload) // 1024, len(o['version'])))
+
+
 def check_dec(path):
     d = open(path, 'rb').read()
     if not is_sepos(d):
@@ -106,9 +151,18 @@ def check_dec(path):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 3 or sys.argv[1] not in ('rom', 'fw', 'dec'):
-        print(__doc__ or 'usage: check-sep.py rom|fw|dec FILE [ORIG_IM4P]', file=sys.stderr)
+    if len(sys.argv) < 3 or sys.argv[1] not in ('rom', 'fw', 'dec', 'wrap'):
+        print('usage: check-sep.py rom|fw|dec FILE [ORIG_IM4P] | wrap ORIG DEC TICKET OUT',
+              file=sys.stderr)
         sys.exit(2)
+    if sys.argv[1] == 'wrap':
+        if len(sys.argv) != 6:
+            bad('usage: check-sep.py wrap ORIG.im4p DECRYPTED TICKET OUT.img4')
+        for f in sys.argv[2:5]:
+            if not os.path.isfile(f):
+                bad('missing: ' + f)
+        wrap(*sys.argv[2:6])
+        sys.exit(0)
     if not os.path.isfile(sys.argv[2]):
         bad('missing: ' + sys.argv[2])
     {'rom': lambda: check_rom(sys.argv[2]),

@@ -305,7 +305,7 @@ build_img4lib() {
   # lzfse from step 2 (/usr/local), OpenSSL from libssl-dev
   make -C "$DATA/img4lib" \
     LDFLAGS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib" \
-    CFLAGS='-I/usr/local/include -Wall -W -pedantic -Wno-variadic-macros -Wno-multichar -Wno-four-char-constants -Wno-unused-parameter -O2 -I. -g -DiOS10 -DDER_MULTIBYTE_TAGS=1 -DDER_TAG_SIZE=8 -D__unused="__attribute__((unused))"' \
+    CFLAGS='-I/usr/local/include -Wall -W -pedantic -Wno-variadic-macros -Wno-multichar -Wno-four-char-constants -Wno-unused-parameter -O2 -I. -g -D__LITTLE_ENDIAN__=1 -DiOS10 -DDER_MULTIBYTE_TAGS=1 -DDER_TAG_SIZE=8 -D__unused="__attribute__((unused))"' \
     || return 1
   [ -x "$DATA/img4lib/img4" ]
 }
@@ -367,6 +367,8 @@ if [ "${SKIP_SEP:-0}" = "1" ]; then
   warn "SKIP_SEP=1 - not preparing $SEPFW_OUT"
 elif [ -s "$SEPFW_OUT" ] && { [ ! -f "$CHECK_SEP" ] || python3 "$CHECK_SEP" fw "$SEPFW_OUT" "$SEPFW_IM4P"; }; then
   log "SEP firmware already prepared and checked: $SEPFW_OUT"
+elif [ ! -f "$CHECK_SEP" ]; then
+  warn "check-sep.py is missing next to $0 - cannot prepare the SEP firmware (reinstall the module)"
 elif [ -z "$SEPFW_IM4P" ] || [ ! -f "$DATA/sep_root_ticket.der" ]; then
   warn "missing SEP im4p or sep_root_ticket.der - skipping SEP prep"
 else
@@ -399,15 +401,17 @@ else
           die "the SEP IV/Key from $KSRC is wrong for 18A5351d / iPhone12,1 (the SEPFirmware IV then Key from $KEYS_URL); fix or delete it and re-run step 4"
         fi
         die "the SEP IV/Key from The Apple Wiki did not decrypt the SEP firmware; put the SEPFirmware IV then Key from $KEYS_URL into $DATA/sep_ivkey.txt and re-run step 4"
-      elif [ -z "$SEP_VER" ]; then
-        warn "img4 -v printed no version string; cannot rewrap the SEP firmware"
       else
-        log "SEP firmware version string: ${SEP_VER:0:24}... (${#SEP_VER} chars)"
+        # Rewrap in Python, not with "img4 -A -T rsep": img4lib only byte-swaps
+        # the fourcc when __LITTLE_ENDIAN__/__x86_64__ is defined, so its GCC
+        # build on arm64 writes the type as 'pesr'. The version string is taken
+        # straight from the IPSW's IM4P (same bytes the guide's -V passes).
+        [ -n "$SEP_VER" ] || warn "img4 -v printed no version string (not needed: it is read from the im4p)"
         log "rewrapping SEP firmware -> $SEPFW_OUT"
-        "$DATA/img4lib/img4" -A -F -o "$SEPFW_OUT" -i "$DATA/sep-firmware.n104.RELEASE" \
-          -M "$DATA/sep_root_ticket.der" -T rsep -V "$SEP_VER" \
-          || { warn "img4 rewrap failed"; rm -f "$SEPFW_OUT"; }
-        if [ -s "$SEPFW_OUT" ] && [ -f "$CHECK_SEP" ] && ! python3 "$CHECK_SEP" fw "$SEPFW_OUT" "$SEPFW_IM4P"; then
+        python3 "$CHECK_SEP" wrap "$SEPFW_IM4P" "$DATA/sep-firmware.n104.RELEASE" \
+          "$DATA/sep_root_ticket.der" "$SEPFW_OUT" \
+          || { rm -f "$SEPFW_OUT"; die "could not rewrap the SEP firmware (reason above)"; }
+        if ! python3 "$CHECK_SEP" fw "$SEPFW_OUT" "$SEPFW_IM4P"; then
           mv -f "$SEPFW_OUT" "$SEPFW_OUT.bad"
           die "the rewrapped SEP firmware failed the check above (kept as $SEPFW_OUT.bad)"
         fi
