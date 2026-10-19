@@ -176,6 +176,11 @@ show_panic() {
     tr -d '\r' < "$f" | tail -n 60
   fi
   echo "----- inferno.log (QEMU) -----"; tail -n 15 "$R/inferno.log"
+  if tr -d '\r' < "$f" | grep -qE 'dart-sep|t8020dart invalid lock state|SEP ROM boot panic|SEP Panic'; then
+    echo "[!] this is a SEP-side panic. ChefKiss FAQ: 'bad SEP ROM or SEP Firmware'."
+    echo "[!] re-run step 4 (it re-checks the SEP ROM and rebuilds a bad sep-firmware...new.img4),"
+    echo "[!] then run this step again. Check: python3 $HERE/check-sep.py fw $DATA/sep-firmware.n104.RELEASE.new.img4"
+  fi
   keep_serial
 }
 

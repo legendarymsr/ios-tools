@@ -194,6 +194,14 @@ chmod +x "$DATA/create_apticket.py" "$DATA/create_septicket.py"
 
 # ---------- 4. SEP ROM dump (Cebu B1 for t8030 / iPhone 11) ----------
 fetch "$SEPROM_URL" "$DATA/AppleSEPROM-Cebu-B1" "$SEPROM_SIZE"
+CHECK_SEP="$(dirname "$0")/check-sep.py"
+if [ -f "$CHECK_SEP" ] && ! python3 "$CHECK_SEP" rom "$DATA/AppleSEPROM-Cebu-B1"; then
+  warn "the SEP ROM is not the Cebu B1 dump - downloading it again"
+  rm -f "$DATA/AppleSEPROM-Cebu-B1"
+  fetch "$SEPROM_URL" "$DATA/AppleSEPROM-Cebu-B1" "$SEPROM_SIZE"
+  python3 "$CHECK_SEP" rom "$DATA/AppleSEPROM-Cebu-B1" \
+    || die "the SEP ROM from $SEPROM_URL is not the Cebu B1 dump; put the right AppleSEPROM-Cebu-B1 in $DATA (or set SEPROM_SHA256=) and re-run step 4"
+fi
 
 # ---------- 5. python deps + forge AP ticket ----------
 log "ensuring pyasn1 is available"
@@ -357,11 +365,15 @@ PY
 
 if [ "${SKIP_SEP:-0}" = "1" ]; then
   warn "SKIP_SEP=1 - not preparing $SEPFW_OUT"
-elif [ -s "$SEPFW_OUT" ]; then
-  log "SEP firmware already prepared: $SEPFW_OUT"
+elif [ -s "$SEPFW_OUT" ] && { [ ! -f "$CHECK_SEP" ] || python3 "$CHECK_SEP" fw "$SEPFW_OUT" "$SEPFW_IM4P"; }; then
+  log "SEP firmware already prepared and checked: $SEPFW_OUT"
 elif [ -z "$SEPFW_IM4P" ] || [ ! -f "$DATA/sep_root_ticket.der" ]; then
   warn "missing SEP im4p or sep_root_ticket.der - skipping SEP prep"
 else
+  if [ -s "$SEPFW_OUT" ]; then
+    warn "the existing $SEPFW_OUT is bad (reason above) - moving it to .bad and rebuilding it"
+    mv -f "$SEPFW_OUT" "$SEPFW_OUT.bad"
+  fi
   log "building img4lib (xerub) for SEP firmware rewrap"
   if ! build_img4lib; then
     warn "img4lib build failed - SEP firmware not prepared (see errors above, then re-run step 4)"
@@ -380,14 +392,25 @@ else
       unset IVKEY
       if [ ! -s "$DATA/sep-firmware.n104.RELEASE" ]; then
         warn "img4 decrypt produced no output - wrong IV/Key? (fix or delete sep_ivkey.txt)"
+      elif [ -f "$CHECK_SEP" ] && ! python3 "$CHECK_SEP" dec "$DATA/sep-firmware.n104.RELEASE"; then
+        rm -f "$DATA/sep-firmware.n104.RELEASE"
+        if [ -n "${SEP_IVKEY:-}" ]; then KSRC="SEP_IVKEY"; elif [ -s "$DATA/sep_ivkey.txt" ]; then KSRC="$DATA/sep_ivkey.txt"; else KSRC=""; fi
+        if [ -n "$KSRC" ]; then
+          die "the SEP IV/Key from $KSRC is wrong for 18A5351d / iPhone12,1 (the SEPFirmware IV then Key from $KEYS_URL); fix or delete it and re-run step 4"
+        fi
+        die "the SEP IV/Key from The Apple Wiki did not decrypt the SEP firmware; put the SEPFirmware IV then Key from $KEYS_URL into $DATA/sep_ivkey.txt and re-run step 4"
       elif [ -z "$SEP_VER" ]; then
         warn "img4 -v printed no version string; cannot rewrap the SEP firmware"
       else
-        log "SEP firmware version: $SEP_VER"
+        log "SEP firmware version string: ${SEP_VER:0:24}... (${#SEP_VER} chars)"
         log "rewrapping SEP firmware -> $SEPFW_OUT"
         "$DATA/img4lib/img4" -A -F -o "$SEPFW_OUT" -i "$DATA/sep-firmware.n104.RELEASE" \
           -M "$DATA/sep_root_ticket.der" -T rsep -V "$SEP_VER" \
           || { warn "img4 rewrap failed"; rm -f "$SEPFW_OUT"; }
+        if [ -s "$SEPFW_OUT" ] && [ -f "$CHECK_SEP" ] && ! python3 "$CHECK_SEP" fw "$SEPFW_OUT" "$SEPFW_IM4P"; then
+          mv -f "$SEPFW_OUT" "$SEPFW_OUT.bad"
+          die "the rewrapped SEP firmware failed the check above (kept as $SEPFW_OUT.bad)"
+        fi
       fi
     fi
   fi

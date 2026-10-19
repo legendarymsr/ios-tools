@@ -30,7 +30,7 @@ public final class Steps {
             // qemu-img / python3 / pip / make are available. Progress streams
             // back through the app log. ~5.5 GB download — needs Wi-Fi + space.
             "cp {P}/download-and-configure.sh {P}/prepare-ios-files.sh {P}/run-t8030.sh "
-          + "{P}/jailbreak-prep.sh {P}/patch-launchd.py "
+          + "{P}/jailbreak-prep.sh {P}/patch-launchd.py {P}/check-sep.py "
           + "/data/local/debian/root/ 2>/dev/null; "
           + "chmod 0755 /data/local/debian/root/jailbreak-prep.sh /data/local/debian/root/patch-launchd.py "
           + "/data/local/debian/root/download-and-configure.sh "
@@ -45,12 +45,12 @@ public final class Steps {
             // detached inside the chroot; tapping again re-attaches.
             "cp {P}/restore-ios.sh {P}/companion-vm.sh {P}/companion-init.sh "
           + "{P}/build-restore-tools.sh {P}/idevicerestore-inferno.patch "
-          + "{P}/run-t8030.sh {P}/patch-launchd.py /data/local/debian/root/ 2>/dev/null; "
+          + "{P}/run-t8030.sh {P}/patch-launchd.py {P}/check-sep.py /data/local/debian/root/ 2>/dev/null; "
           + "chmod 0755 /data/local/debian/root/restore-ios.sh /data/local/debian/root/companion-vm.sh "
           + "/data/local/debian/root/build-restore-tools.sh /data/local/debian/root/run-t8030.sh; "
           + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/restore-ios.sh'"),
         new Step("6. Boot iOS (t8030)",
-            "cp {P}/run-t8030.sh /data/local/debian/root/ 2>/dev/null; "
+            "cp {P}/run-t8030.sh {P}/check-sep.py /data/local/debian/root/ 2>/dev/null; "
           + "sh /data/local/enter-debian.sh "
           + "'cd /root/InfernoData && bash /root/run-t8030.sh'"),
         new Step("7. Show READY / restore status",

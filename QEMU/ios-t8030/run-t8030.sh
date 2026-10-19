@@ -73,6 +73,16 @@ for f in "$TICKET" "$SEPFW" "$SEPROM" "$KERNEL" "$DTB" "$TRUSTCACHE"; do
   fi
 done
 [ "$missing" = "0" ] || exit 1
+# A bad SEP ROM / SEP firmware (wrong IV/Key, wrong -V string, encrypted
+# payload) makes iOS panic in the SEP DART ("dart-sep ... DART error" or
+# "t8020dart invalid lock state"); catch it before booting.
+CHECK_SEP="$(dirname "$0")/check-sep.py"
+if [ "${SKIP_SEP_CHECK:-0}" != "1" ] && [ -f "$CHECK_SEP" ] && command -v python3 >/dev/null 2>&1; then
+  python3 "$CHECK_SEP" rom "$SEPROM" \
+    || { echo "[ERROR] bad SEP ROM: $SEPROM - re-run step 4 (Download & Configure)"; exit 1; }
+  python3 "$CHECK_SEP" fw "$SEPFW" "$RESTORE/Firmware/all_flash/sep-firmware.n104.RELEASE.im4p" \
+    || { echo "[ERROR] bad SEP firmware: $SEPFW - re-run step 4 (it rebuilds only the SEP firmware)"; exit 1; }
+fi
 # ChefKiss troubleshooting: "at24c-eeprom: Backing file size 65536 != 2048"
 [ -f "$DATA/sep_nvram" ] && truncate -c -s 64K "$DATA/sep_nvram" 2>/dev/null || true
 
