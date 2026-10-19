@@ -154,6 +154,31 @@ case "$(state)" in
      restore_blank; set_state new ;;
 esac
 
+# Keep every attempt's full serial log and show the real panic string: the
+# "IOPlatformPanicAction -> ...WatchDogTimer / ...PMGR" and "wdog panic
+# (attempt 1)" lines are printed for EVERY iOS panic; the cause is the
+# "panic(cpu N caller ...): ..." line above them.
+keep_serial() {
+  [ -s "$R/ios-serial.log" ] || return 0
+  local ts; ts=$(date +%Y%m%d-%H%M%S)
+  cp -f "$R/ios-serial.log" "$R/ios-serial.$ts.log" && log "full iOS serial log kept: $R/ios-serial.$ts.log"
+}
+show_panic() {
+  local f="$R/ios-serial.log" n
+  [ -s "$f" ] || { warn "the iOS serial log is empty"; tail -n 30 "$R/inferno.log"; return 0; }
+  n=$(tr -d '\r' < "$f" | grep -n -m1 -E 'panic\(|[Pp]anic:|SEP Panic|panicString|IOPlatformPanicAction' | cut -d: -f1)
+  if [ -n "$n" ]; then
+    echo "----- iOS serial: 40 lines before/after the first panic line (line $n) -----"
+    tr -d '\r' < "$f" | sed -n "$(( n > 40 ? n - 40 : 1 )),$(( n + 40 ))p"
+    echo "----- end -----"
+  else
+    echo "----- iOS serial: last 60 lines (no panic line found) -----"
+    tr -d '\r' < "$f" | tail -n 60
+  fi
+  echo "----- inferno.log (QEMU) -----"; tail -n 15 "$R/inferno.log"
+  keep_serial
+}
+
 # idevicerestore --plain-progress prints "progress: STEP FRACTION" and
 # "LABEL:  PCT" lines very often; keep one line per 5 % per step/label.
 progress_filter() {
@@ -191,11 +216,11 @@ if [ "$(state)" = new ]; then
     die "an iOS VM is already running (Boot step?) - stop it first"
   fi
   set_state stage1-running
-  bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
+  COMPANION_SMP="${COMPANION_SMP:-1}" bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
 
   log "booting the iOS restore ramdisk ($(basename "$RAMDISK")); watch it with 'Open VNC viewer'"
   : > "$R/ios-serial.log"
-  RESTORE_MODE=1 USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" \
+  RESTORE_MODE=1 SMP="${RESTORE_SMP:-${SMP:-7}}" USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" \
     SERIAL_QEMU="-serial file:$R/ios-serial.log" \
     setsid bash "$HERE/run-t8030.sh" > "$R/inferno.log" 2>&1 < /dev/null &
   IOS_PID=$!
@@ -203,12 +228,12 @@ if [ "$(state)" = new ]; then
   log "waiting for the restore ramdisk to show up over USB (TCG: often 10-40 min)"
   t0=$(date +%s); next=0; udid=""
   while :; do
-    kill -0 "$IOS_PID" 2>/dev/null || { tail -n 30 "$R/inferno.log" "$R/ios-serial.log"; die "the iOS VM exited before the device appeared (logs above)"; }
+    kill -0 "$IOS_PID" 2>/dev/null || { show_panic; die "the iOS VM exited before the device appeared (panic/log above)"; }
     bash "$HERE/companion-vm.sh" status | grep -q running || { tail -n 30 "$DATA/companion/console.log" "$DATA/companion/job.log"; die "the USB-host VM stopped (logs above)"; }
     udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
     [ -n "$udid" ] && break
     el=$(( $(date +%s) - t0 ))
-    [ "$el" -lt "${DEVICE_TIMEOUT:-10800}" ] || { tail -n 20 "$R/ios-serial.log"; grep -A6 'lsusb' "$DATA/companion/job.log" | tail -n 8; die "no device after ${DEVICE_TIMEOUT:-10800} s"; }
+    [ "$el" -lt "${DEVICE_TIMEOUT:-10800}" ] || { show_panic; grep -A6 'lsusb' "$DATA/companion/job.log" | tail -n 8; die "no device after ${DEVICE_TIMEOUT:-10800} s"; }
     if [ "$el" -ge "$next" ]; then
       printf '[*] %3d min: iOS: %s\n' $((el / 60)) "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
       next=$((next + 120))
@@ -226,7 +251,7 @@ if [ "$(state)" = new ]; then
   irc=$?
   set +o pipefail
   if [ "$irc" != 0 ]; then
-    tail -n 15 "$R/ios-serial.log"
+    show_panic
     die "idevicerestore failed (exit $irc). Full log: $R/idevicerestore.log.raw. Tap the step again to retry from the blank backup."
   fi
   grep -q '^DONE' "$R/idevicerestore.log.raw" || warn "idevicerestore exited 0 but did not print DONE"

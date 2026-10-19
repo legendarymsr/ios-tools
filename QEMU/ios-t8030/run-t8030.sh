@@ -155,6 +155,10 @@ if [ -f "$DATA/JAILBREAK_APPLIED" ] || [ "${JAILBREAK:-0}" = "1" ]; then
 fi
 [ -n "${EXTRA_BOOTARGS:-}" ] && BOOTARGS="$BOOTARGS $EXTRA_BOOTARGS"
 echo "[*] boot-args: $BOOTARGS"
+# -smp: with SEP emulation Inferno takes ONE of the -smp CPUs for the SEP
+# (t8030_real_cpu_count = smp - 1). ChefKiss's guide uses -smp 7 = the A13's
+# 6 application cores + SEP; v1.2.1 and older passed 6 (only 5 AP cores).
+echo "[*] -smp ${SMP:-7} (= $(( ${SMP:-7} - 1 )) A13 cores + 1 SEP core)"
 
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" -L "$QDATA" \
@@ -162,7 +166,7 @@ exec "$QEMU" -L "$QDATA" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true$USBOPT \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "$BOOTARGS" \
-  -smp "${SMP:-6}" -m "${MEM:-4G}" ${SERIAL_QEMU:--serial mon:stdio} \
+  -smp "${SMP:-7}" -m "${MEM:-4G}" ${SERIAL_QEMU:--serial mon:stdio} \
   ${DISPLAY_QEMU:--display vnc=127.0.0.1:0} \
   $INITRD \
   -drive file="$DATA/sep_nvram,if=pflash,format=raw" \
