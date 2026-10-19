@@ -1,24 +1,21 @@
 package com.checkm8otg;
 
 import android.content.Context;
-import android.util.Log;
 
 import com.topjohnwu.superuser.Shell;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * Extracts the bundled aarch64 palera1n (Linux musl-static v2.2) and optional
- * checkra1n override, then runs them as root. Assets are embedded inside
- * palera1n (Pongo.bin, ramdisk, binpack, kpf, checkra1n); we also ship a
- * standalone checkra1n and pass -i so TMPDIR exec / SELinux is under our control.
+ * checkra1n override, then runs them as root with live output streaming (see
+ * {@link NativeRunner}). palera1n embeds its own assets (Pongo.bin, ramdisk,
+ * binpack, kpf, checkra1n); we also ship a standalone checkra1n and pass -i so
+ * TMPDIR exec / SELinux is under our control.
  */
 public final class Palera1nRunner {
-    private static final String TAG = "Palera1nRunner";
     private static final String ASSET_PALERA1N = "palera1n";
     private static final String ASSET_CHECKRA1N = "checkra1n";
 
@@ -34,10 +31,7 @@ public final class Palera1nRunner {
         }
     }
 
-    public interface Listener {
-        void onLine(String line);
-        void onFinished(int exitCode);
-    }
+    public interface Listener extends NativeRunner.Listener {}
 
     private Palera1nRunner() {}
 
@@ -58,7 +52,7 @@ public final class Palera1nRunner {
         return out;
     }
 
-    /** Extract palera1n + checkra1n and prepare TMPDIR. */
+    /** Extract palera1n + checkra1n and prepare TMPDIR. Returns {palera1n, checkra1n, tmp}. */
     public static File[] ensureBinaries(Context ctx) throws Exception {
         File dir = new File(ctx.getFilesDir(), "bin");
         if (!dir.exists() && !dir.mkdirs()) {
@@ -77,48 +71,29 @@ public final class Palera1nRunner {
     }
 
     /**
-     * Run palera1n in the given mode.
-     * Always passes -S (no colors), -v (debug log), -i checkra1n (bundled override).
+     * Run palera1n in the given mode with -S (no colors), -v (debug), -i checkra1n.
+     * Returns a Handle that can cancel a stuck run.
      */
-    public static void run(Context ctx, Mode mode, Listener listener) {
-        new Thread(() -> {
-            try {
-                File[] bins = ensureBinaries(ctx);
-                File palera1n = bins[0];
-                File checkra1n = bins[1];
-                File tmp = bins[2];
-                GasterRunner.fixUsbPerms();
+    public static NativeRunner.Handle run(Context ctx, Mode mode, NativeRunner.Listener listener) {
+        try {
+            File[] bins = ensureBinaries(ctx);
+            File palera1n = bins[0];
+            File checkra1n = bins[1];
+            File tmp = bins[2];
 
-                // TMPDIR must be writable+executable; palera1n extracts embedded
-                // blobs here if -i/-k/-r etc. are not all overridden. We override
-                // checkra1n with -i; other assets stay embedded in the binary.
-                StringBuilder sb = new StringBuilder();
-                sb.append("export TMPDIR='").append(tmp.getAbsolutePath()).append("'; ");
-                sb.append("export TERM=xterm; ");
-                sb.append("'").append(palera1n.getAbsolutePath()).append("'");
-                sb.append(' ').append(mode.flag);
-                sb.append(" -S -v");
-                sb.append(" -i '").append(checkra1n.getAbsolutePath()).append("'");
+            StringBuilder sb = new StringBuilder();
+            sb.append("'").append(palera1n.getAbsolutePath()).append("'");
+            sb.append(' ').append(mode.flag);
+            sb.append(" -S -v");
+            sb.append(" -i '").append(checkra1n.getAbsolutePath()).append("'");
 
-                String full = sb.toString();
-                listener.onLine("$ su -c " + full);
-                listener.onLine("[mode] " + mode.label + " (" + mode.flag + ")");
-                listener.onLine("[note] palera1n v2.2 linux-arm64 (musl-static); live USB untested on this build host");
-
-                Shell.Result result = Shell.cmd(full).to(new ArrayList<>(), new ArrayList<>()).exec();
-                for (String line : result.getOut()) {
-                    listener.onLine(line);
-                }
-                for (String line : result.getErr()) {
-                    listener.onLine("[err] " + line);
-                }
-                listener.onLine("[exit " + result.getCode() + "]");
-                listener.onFinished(result.getCode());
-            } catch (Exception e) {
-                Log.e(TAG, "run failed", e);
-                listener.onLine("[exception] " + e.getMessage());
-                listener.onFinished(-1);
-            }
-        }, "palera1n-runner").start();
+            listener.onLine("[mode] " + mode.label + " (" + mode.flag + ")");
+            listener.onLine("[note] palera1n v2.2 linux-arm64 (musl-static); live USB untested on this build host");
+            return NativeRunner.run(ctx, palera1n, tmp, sb.toString(), listener);
+        } catch (Exception e) {
+            listener.onLine("[exception] extract palera1n: " + e.getMessage());
+            listener.onFinished(-1);
+            return null;
+        }
     }
 }

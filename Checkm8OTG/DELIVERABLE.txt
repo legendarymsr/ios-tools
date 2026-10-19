@@ -1,35 +1,45 @@
-Checkm8 OTG v1.1.0 — deliverable summary
+Checkm8 OTG v1.2.0 — deliverable summary
 ========================================
 
-APK (copy this):
-  /workspace/ksu-checkm8/Checkm8OTG-debug.apk
+APK (in repo):
+  Checkm8OTG/Checkm8OTG-debug.apk
   (same bytes as Checkm8OTG/app/build/outputs/apk/debug/app-debug.apk)
 
-Project source:
-  /workspace/ksu-checkm8/Checkm8OTG/
+What changed in v1.2.0 (unresponsive-buttons fix):
+  - Buttons now give immediate, synchronous feedback on tap (header line +
+    status), before any root/binary work that could block.
+  - Output is streamed LIVE line-by-line (stdout+stderr merged) into the app
+    log instead of being buffered until the process exits.
+  - Runs are cancellable: new Cancel button kills the child process group via
+    an independent root shell, so a stuck gaster/palera1n retry loop no longer
+    freezes every button for the 900s libsu timeout.
+  - Explicit root pre-check: if su is not granted the log says so loudly
+    instead of silently running non-root and failing on /dev/bus/usb.
+  - USB pre-flight prints getenforce, the /dev/bus/usb nodes, lsusb, and
+    whether an Apple VID (05ac) is visible, so a missing device is obvious.
+  - Child runs detached (setsid) with exit code captured and reported.
 
 Bundled engines (all Stored/uncompressed in APK):
-  assets/gaster     — aarch64 Android NDK r27d PIE ELF (libusb+libcrypto static)
-  assets/palera1n   — official palera1n-linux-arm64 v2.2 (musl-static, ROOTFUL build)
-                      embeds Pongo.bin, ramdisk, binpack, kpf, patched checkra1n
-  assets/checkra1n  — official checkra1n-linux-arm64 0.1337.3 (musl-static)
-                      passed to palera1n via -i
+  assets/gaster     — aarch64 Android NDK PIE ELF (libusb+libcrypto static)
+  assets/palera1n   — palera1n-linux-arm64 v2.2 (musl-static)
+  assets/checkra1n  — checkra1n-linux-arm64 (musl-static), passed via -i
 
 Install:  adb install -r Checkm8OTG-debug.apk
-Flow:     DFU iPhone → OTG → grant root → Exploit (pwned DFU) and/or
-          pick Rootless/Rootful → Jailbreak (palera1n)
+Flow:     DFU iPhone -> OTG -> grant root -> Exploit (pwned DFU) and/or
+          pick Rootless/Rootful -> Jailbreak (palera1n); Cancel to stop.
 
 Support:
-  gaster:    A5–A11 / T2
-  palera1n:  A8–A11 / T2, iOS/iPadOS/tvOS 15–26 (bridgeOS 5–10)
+  gaster:    A5-A11 / T2
+  palera1n:  A8-A11 / T2, iOS/iPadOS/tvOS 15-26
   NOT:       A12+
 
 Verified on build host:
-  - APK assembles (Gradle assembleDebug)
-  - Bundled binaries are valid aarch64 ELFs (file/readelf)
-  - Assets packaged Stored (uncompressed)
+  - APK assembles (Gradle assembleDebug), versionName 1.2.0 / versionCode 3
+  - Signed with the same debug key as prior releases (cert SHA-256
+    6fd329b898f55b8c98496b4e33b8d8b679fa63415bfb818d26a7d8d5131379d9)
+  - Bundled binaries are valid aarch64 ELFs, packaged Stored
 
 NOT verified:
-  - Live USB exploit / jailbreak against a real iPhone (none attached)
-
-See Checkm8OTG/README.md for full docs and caveats.
+  - Live USB exploit / jailbreak against a real iPhone (no device on build host)
+  - Whether gaster can claim the DFU device on this specific phone/Android;
+    the USB pre-flight log will now show if the node/VID is visible.

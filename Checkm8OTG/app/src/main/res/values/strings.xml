@@ -5,6 +5,7 @@
     <string name="btn_exploit">Exploit (gaster pwn)</string>
     <string name="btn_reset">Reset USB / gaster reset</string>
     <string name="btn_jailbreak">Jailbreak (palera1n)</string>
+    <string name="btn_cancel">Cancel / Stop current run</string>
     <string name="mode_label">Jailbreak mode</string>
     <string name="mode_rootless">Rootless (-l) — default, iOS 15+</string>
     <string name="mode_rootful">Rootful / fakefs (-f) — creates fakefs</string>

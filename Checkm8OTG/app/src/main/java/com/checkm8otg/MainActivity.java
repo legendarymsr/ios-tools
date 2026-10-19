@@ -48,6 +48,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnExploit;
     private Button btnReset;
     private Button btnJailbreak;
+    private Button btnCancel;
     private RadioGroup modeGroup;
     private RadioButton modeRootless;
     private RadioButton modeRootful;
@@ -55,6 +56,7 @@ public class MainActivity extends AppCompatActivity {
     private UsbManager usbManager;
     private final Handler main = new Handler(Looper.getMainLooper());
     private boolean busy = false;
+    private NativeRunner.Handle currentJob = null;
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
         @Override
@@ -92,15 +94,18 @@ public class MainActivity extends AppCompatActivity {
         btnExploit = findViewById(R.id.btnExploit);
         btnReset = findViewById(R.id.btnReset);
         btnJailbreak = findViewById(R.id.btnJailbreak);
+        btnCancel = findViewById(R.id.btnCancel);
         modeGroup = findViewById(R.id.modeGroup);
         modeRootless = findViewById(R.id.modeRootless);
         modeRootful = findViewById(R.id.modeRootful);
 
         usbManager = (UsbManager) getSystemService(USB_SERVICE);
 
-        btnExploit.setOnClickListener(v -> runGaster(new String[]{"pwn"}));
-        btnReset.setOnClickListener(v -> runGaster(new String[]{"reset"}));
+        btnExploit.setOnClickListener(v -> runGaster(new String[]{"pwn"}, "Exploit (gaster pwn)"));
+        btnReset.setOnClickListener(v -> runGaster(new String[]{"reset"}, "Reset (gaster reset)"));
         btnJailbreak.setOnClickListener(v -> runPalera1n());
+        btnCancel.setOnClickListener(v -> cancelCurrent());
+        btnCancel.setEnabled(false);
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_USB_PERMISSION);
@@ -112,6 +117,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("gaster: A5–A11 / T2 → pwned DFU.");
         appendLog("palera1n: A8–A11 / T2, iOS 15–26 (rootless or rootful/fakefs).");
         appendLog("A12+ is not vulnerable. Live USB path not tested on this build host.");
+        appendLog("Tip: every button streams its command + output below; use Cancel to stop a stuck run.");
         checkRoot();
         refreshUsb();
 
@@ -138,23 +144,22 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("No root shell. Install KernelSU or Magisk and grant this app.");
             } else {
                 appendLog("Root shell ready (timeout 900s).");
-                try {
-                    java.io.File f = GasterRunner.ensureBinary(this);
-                    appendLog("gaster ready at " + f.getAbsolutePath()
-                            + " (" + f.length() + " bytes)");
-                } catch (Exception e) {
-                    appendLog("Failed to extract gaster: " + e.getMessage());
-                }
-                try {
-                    java.io.File[] bins = Palera1nRunner.ensureBinaries(this);
-                    appendLog("palera1n ready at " + bins[0].getAbsolutePath()
-                            + " (" + bins[0].length() + " bytes)");
-                    appendLog("checkra1n ready at " + bins[1].getAbsolutePath()
-                            + " (" + bins[1].length() + " bytes)");
-                    appendLog("TMPDIR " + bins[2].getAbsolutePath());
-                } catch (Exception e) {
-                    appendLog("Failed to extract palera1n: " + e.getMessage());
-                }
+                new Thread(() -> {
+                    try {
+                        java.io.File f = GasterRunner.ensureBinary(this);
+                        postLog("gaster ready at " + f.getAbsolutePath() + " (" + f.length() + " bytes)");
+                    } catch (Exception e) {
+                        postLog("Failed to extract gaster: " + e.getMessage());
+                    }
+                    try {
+                        java.io.File[] bins = Palera1nRunner.ensureBinaries(this);
+                        postLog("palera1n ready at " + bins[0].getAbsolutePath() + " (" + bins[0].length() + " bytes)");
+                        postLog("checkra1n ready at " + bins[1].getAbsolutePath() + " (" + bins[1].length() + " bytes)");
+                        postLog("TMPDIR " + bins[2].getAbsolutePath());
+                    } catch (Exception e) {
+                        postLog("Failed to extract palera1n: " + e.getMessage());
+                    }
+                }, "extract-bins").start();
             }
         }));
     }
@@ -178,6 +183,8 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         usbText.setText(sb.toString());
+
+        if (busy) return; // don't clobber the running status line
 
         if (dfu != null) {
             statusText.setText("DFU device detected — ready");
@@ -210,18 +217,33 @@ public class MainActivity extends AppCompatActivity {
         btnJailbreak.setEnabled(!value);
         modeRootless.setEnabled(!value);
         modeRootful.setEnabled(!value);
+        btnCancel.setEnabled(value);
     }
 
-    private void runGaster(String[] args) {
+    private void cancelCurrent() {
+        if (currentJob != null) {
+            appendLog("[cancel] stopping current run…");
+            statusText.setText("Cancelling…");
+            statusText.setTextColor(ContextCompat.getColor(this, R.color.warn));
+            currentJob.cancel();
+            btnCancel.setEnabled(false);
+        } else {
+            appendLog("[cancel] nothing is running");
+        }
+    }
+
+    private void runGaster(String[] args, String label) {
+        // Immediate, synchronous feedback on the UI thread so a tap is never silent.
         if (busy) {
-            appendLog("Already running…");
+            appendLog("Busy — a run is in progress. Use Cancel to stop it first.");
             return;
         }
+        appendLog("── " + label + " ──");
         setBusy(true);
         statusText.setText("Running gaster " + (args.length > 0 ? args[0] : "") + "…");
         statusText.setTextColor(ContextCompat.getColor(this, R.color.warn));
 
-        GasterRunner.run(this, args, new GasterRunner.Listener() {
+        currentJob = GasterRunner.run(this, args, new NativeRunner.Listener() {
             @Override
             public void onLine(String line) {
                 main.post(() -> appendLog(line));
@@ -230,6 +252,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onFinished(int exitCode) {
                 main.post(() -> {
+                    currentJob = null;
                     setBusy(false);
                     if (exitCode == 0) {
                         statusText.setText("gaster OK — device should be in pwned DFU");
@@ -246,18 +269,19 @@ public class MainActivity extends AppCompatActivity {
 
     private void runPalera1n() {
         if (busy) {
-            appendLog("Already running…");
+            appendLog("Busy — a run is in progress. Use Cancel to stop it first.");
             return;
         }
         Palera1nRunner.Mode mode = modeRootful.isChecked()
                 ? Palera1nRunner.Mode.ROOTFUL
                 : Palera1nRunner.Mode.ROOTLESS;
+        appendLog("── Jailbreak (palera1n " + mode.label + ") ──");
         setBusy(true);
         statusText.setText("Running palera1n (" + mode.label + ")…");
         statusText.setTextColor(ContextCompat.getColor(this, R.color.warn));
         appendLog("Starting palera1n " + mode.label + " — keep the cable seated; this can take several minutes.");
 
-        Palera1nRunner.run(this, mode, new Palera1nRunner.Listener() {
+        currentJob = Palera1nRunner.run(this, mode, new NativeRunner.Listener() {
             @Override
             public void onLine(String line) {
                 main.post(() -> appendLog(line));
@@ -266,6 +290,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onFinished(int exitCode) {
                 main.post(() -> {
+                    currentJob = null;
                     setBusy(false);
                     if (exitCode == 0) {
                         statusText.setText("palera1n finished OK (exit 0)");
@@ -278,6 +303,10 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         });
+    }
+
+    private void postLog(String line) {
+        main.post(() -> appendLog(line));
     }
 
     private void appendLog(String line) {
