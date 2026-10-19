@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.7.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.8.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,13 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.8 SEP DART panic with verified SEP files:**
+  - **What the panic is:** `t8020dart invalid lock state` comes from the iOS kernel's SEP DART driver. It panics when a DART interrupt arrives (`DART interrupt while disabled by the client`) while the driver has the DART disabled. In Inferno, the emulated SEP is its own vCPU whose whole DMA window goes through `dart-sep` (`apple_sep_from_node(..., apple_dart_iommu_mr(dart-sep))`). Under MTTCG it runs in parallel with, and on a slow phone often behind, the AP kernel. So an SEP access that faults just as the kernel turns the DART off raises exactly this interrupt. With good SEP files this is timing, not bad files. step 4's `check-sep.py` already verifies the ROM and firmware, and steps 5 and 6 refuse to boot otherwise.
+  - **Inferno patch `inferno-dart-error-lock.patch` (step 3, incremental):** the AP clearing DART error bits (`ERROR_STATUS` write) was done without the lock that the SEP vCPU holds while it records a fault and raises the IRQ. A clear racing with a new fault could put back bits the kernel had already handled (a stale interrupt after it disabled the DART), or lower the IRQ over a new error. The clear and the IRQ re-evaluation now run under that lock. This removes one way to get the panic. It cannot remove the underlying SEP-vs-AP timing.
+  - **Retried instead of stopping:** with verified SEP files (no `SKIP_SEP_CHECK=1`), `t8020dart invalid lock state` and `dart-sep … TTBR invalid` now reboot the iOS VM up to `PANIC_RETRIES` (3) times, without the "re-run step 4" hint. `SEP ROM boot panic` / `Img4Decode` still stop.
+  - **`TCG_OPTS`:** e.g. `TCG_OPTS=thread=single` runs all vCPUs in one host thread, so the SEP and the AP cannot run truly in parallel. It is many times slower on a phone, so it is only an experiment.
+  - **Checked against the current ChefKiss guide:** the machine options are the same (`sep-fw=sep-firmware.n104.RELEASE.new.img4,sep-rom=AppleSEPROM-Cebu-B1,ticket=root_ticket.der,kaslr-off=true`, same `-append`, `-smp 7 -m 4G`). Inferno reads exactly those files (`sep_fw_filename` / `sep_rom_filename`), and step 5 passes `$DATA/sep-firmware.n104.RELEASE.new.img4` and `$DATA/AppleSEPROM-Cebu-B1`, the same files `check-sep.py` checks. The Inferno `dev` branch has no DART/SEP fix for this panic: its DART changes are atomics with a per-stream TLB cache, and "maybe properly handle bypass" makes disabled translation an error instead of a bypass.
+  - **Re-run step 3** (two files recompiled + relink), then step 5.
 - **v1.2.7 USB-host VM crash fixed in Inferno, panics retried:**
   - **Inferno patch (`inferno-usb-tcp-remote-fix.patch`, applied by step 3):** Inferno's `usb-tcp-remote` cleanup completed packets that EHCI had already cancelled (the normal completion path checks `usb_packet_is_inflight`, the cleanup path did not), which aborts QEMU with "usb packet state check failed" (SIGABRT, exit 134) when the link drops. The patch adds that check. It also waits for the old connection to be torn down before accepting a new one, and reports a failed attach instead of aborting. Inferno's `dev` branch rewrote this device ("dev-tcp-remote: make async"), but it also renames the USB protocol and options and reworks the CPU locking, so it is not cherry-picked onto the pinned commit.
   - **Re-run step 3 once:** it applies the patch to the existing tree, and ninja recompiles only `hw/usb/dev-tcp-remote.c` and relinks `qemu-system-aarch64`, usually 3-10 min on a phone. Step 5 refuses to start until step 3 has written the `build/.ios-tools-patches` marker (`SKIP_PATCH_CHECK=1` skips the check).
@@ -210,7 +217,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.7.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.8.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

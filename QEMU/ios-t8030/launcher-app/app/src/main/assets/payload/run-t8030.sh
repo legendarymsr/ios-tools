@@ -140,7 +140,7 @@ USBOPT=""
 
 # --- Accel selection ----------------------------------------------------------
 # Probe host KVM for logging. Force TCG for t8030 regardless (see header).
-ACCEL="tcg"
+ACCEL="tcg${TCG_OPTS:+,$TCG_OPTS}"   # e.g. TCG_OPTS=thread=single (much slower)
 ACCEL_WHY="Inferno t8030 machine uses Apple A13 CPUs + 16KiB pages (TCG-only); -accel kvm / -cpu host are not usable for this guest"
 if [ -e /dev/kvm ]; then
   if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then

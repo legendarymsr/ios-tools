@@ -1,0 +1,27 @@
+diff --git a/hw/arm/apple-silicon/dart.c b/hw/arm/apple-silicon/dart.c
+index b8dde8d..48fd2e9 100644
+--- a/hw/arm/apple-silicon/dart.c
++++ b/hw/arm/apple-silicon/dart.c
+@@ -328,8 +328,20 @@ static void apple_dart_mapper_reg_write(void *opaque, hwaddr addr,
+         }
+         break;
+     case R_DART_ERROR_STATUS:
+-        mapper->regs.error_status &= ~val;
+-        apple_dart_update_irq(mapper->common.dart);
++        /*
++         * Clear and re-evaluate the IRQ under the same lock that
++         * apple_dart_mapper_translate holds while it sets error bits and
++         * raises the IRQ. With MTTCG the SEP vCPU translates through this
++         * DART concurrently with the AP kernel clearing errors; unlocked,
++         * the clear could resurrect already handled bits (a stale DART
++         * interrupt after the kernel disabled the DART, "t8020dart invalid
++         * lock state") or lower the IRQ over a new error.
++         */
++        WITH_QEMU_LOCK_GUARD(&mapper->common.mutex)
++        {
++            mapper->regs.error_status &= ~val;
++            apple_dart_update_irq(mapper->common.dart);
++        }
+         break;
+     case R_DART_CONFIG:
+         mapper->regs.config = val;

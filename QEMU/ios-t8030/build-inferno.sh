@@ -166,9 +166,13 @@ fi
 # iOS side disconnected while a packet was already cancelled, and could abort
 # on a quick reconnect. Applying it to an already built tree only recompiles
 # hw/usb/dev-tcp-remote.c and relinks qemu-system-aarch64 (a few minutes).
+# inferno-dart-error-lock.patch: clears DART error bits under the lock the
+# SEP vCPU holds while it reports a DART fault, so the AP kernel cannot get
+# a stale "already handled" DART interrupt under MTTCG (one cause of the
+# "t8020dart invalid lock state" panic). Again one file + relink.
 HERE=$(cd "$(dirname "$0")" && pwd)
-PATCH_ID="usb-tcp-remote-fix-1"
-for p in inferno-usb-tcp-remote-fix.patch; do
+PATCH_ID="ios-tools-patches-2"
+for p in inferno-usb-tcp-remote-fix.patch inferno-dart-error-lock.patch; do
   pf="$HERE/$p"
   [ -f "$pf" ] || die "$p missing next to $0 (copy the whole payload)"
   if git -C "$SRC" apply --reverse --check "$pf" >/dev/null 2>&1; then

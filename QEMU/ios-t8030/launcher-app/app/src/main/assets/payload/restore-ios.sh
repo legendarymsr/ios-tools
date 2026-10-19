@@ -96,10 +96,10 @@ set -a; . "$DATA/run.env"; set +a
 [ -f "$DATA/root_ticket.der" ] || die "missing $DATA/root_ticket.der - re-run step 4"
 for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run step 4"; done
 [ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
-# v1.2.7 fixes a USB-host VM crash inside Inferno's usb-tcp-remote device;
+# v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'usb-tcp-remote-fix-1' /root/Inferno/build/.ios-tools-patches; then
-  die "Inferno needs the v1.2.7 USB fix: run step 3 again (only recompiles one file, ~5 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-2' /root/Inferno/build/.ios-tools-patches; then
+  die "Inferno needs the v1.2.8 patches (USB + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
@@ -242,9 +242,14 @@ panic_line() {
 # "SEP ROM timeout - no response" ("random chance that SEP won't boot ... just
 # reboot", Inferno #54), watchdog, restored giving up on a lost USB host.
 panic_kind() {
-  if tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE \
-     'dart-sep.*TTBR invalid|t8020dart invalid lock state|SEP ROM boot panic|Img4Decode|cannot find IOAESAccelerator|AppleSEPROM.*(invalid|bad)'; then
+  local log; log=$(tr -d '\r' < "$R/ios-serial.log" 2>/dev/null)
+  if printf '%s\n' "$log" | grep -qE 'SEP ROM boot panic|Img4Decode|cannot find IOAESAccelerator|AppleSEPROM.*(invalid|bad)'; then
     echo fatal
+  elif printf '%s\n' "$log" | grep -qE 'dart-sep.*TTBR invalid|t8020dart invalid lock state'; then
+    # run-t8030.sh only boots after check-sep.py passed the SEP ROM and SEP
+    # firmware, so with verified files this is the SEP-DART timing race
+    # under MTTCG, not bad files: retry. Fatal only if the check was skipped.
+    if [ "${SKIP_SEP_CHECK:-0}" = 1 ]; then echo fatal; else echo retry; fi
   else
     echo retry
   fi
@@ -261,7 +266,7 @@ handle_panic() {
   if [ "$PANIC_REBOOTS" -gt "${PANIC_RETRIES:-3}" ]; then
     die "iOS panicked $1 $PANIC_REBOOTS times: ${pl:-see above}"
   fi
-  warn "iOS panicked $1: ${pl:-no panic string} - timing/USB panic, rebooting the iOS VM ($PANIC_REBOOTS/${PANIC_RETRIES:-3})"
+  warn "iOS panicked $1: ${pl:-no panic string} - SEP files are verified, so this is a timing/USB panic; rebooting the iOS VM ($PANIC_REBOOTS/${PANIC_RETRIES:-3})"
   companion_up || restart_companion
   start_ios
 }
