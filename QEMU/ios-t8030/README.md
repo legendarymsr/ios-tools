@@ -5,10 +5,33 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.3.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.4.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
+
+## Built-in VNC viewer (v1.1.4)
+
+The launcher app has its own VNC viewer, so no separate VNC app is needed.
+
+- **Open VNC viewer (127.0.0.1:5900)** button at the top of the step list. It
+  stays enabled while a step is running, so you can open it while the VM is up.
+- The **Boot** step opens the viewer automatically as soon as
+  `127.0.0.1:5900` accepts connections (it watches for about 60 s).
+- The viewer retries the connection for about 60 s while QEMU is still starting,
+  and shows **Disconnected — tap to reconnect** if the VM stops.
+- Screen is drawn **fit-to-screen**; **pinch** to zoom (up to 8×), **two-finger
+  drag** to pan, **Fit** resets.
+- **Tap** = left click, **one-finger drag** = move with the left button held,
+  **long press** = right click. A hardware mouse (hover + wheel) also works.
+- **Keyboard** toolbar button shows/hides the soft keyboard; typed text is sent
+  as key events. Extra toolbar keys: **Esc** and **Ctrl+C**. Hardware keyboards
+  work too (arrows, Home/End, PgUp/PgDn, modifiers).
+- **Back** closes the viewer only; the VM keeps running.
+- Protocol: RFB 3.8 (3.3/3.7 accepted), security type *None* (QEMU's default
+  `-display vnc=127.0.0.1:0` has no password), Raw + CopyRect encodings,
+  DesktopSize so guest resolution changes are followed. Written in plain Java,
+  no extra libraries.
 
 ## Reality check (important)
 
@@ -61,7 +84,7 @@ installs the **iOS Emu (t8030)** launcher app.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.3.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.4.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -89,7 +112,8 @@ installs the **iOS Emu (t8030)** launcher app.
      `sep-firmware.n104.RELEASE.new.img4`
    - auto-detects kernel / DeviceTree / trustcache / ramdisk filenames
    - writes `run.env` + `READY` so Boot just works
-5. **Boot iOS (t8030)** — runs `run-t8030.sh` (VNC on `127.0.0.1:5900`).
+5. **Boot iOS (t8030)** — runs `run-t8030.sh` (VNC on `127.0.0.1:5900`); the
+   built-in viewer opens on its own once the VNC port is up.
 6. **Show READY status** — prints what was configured / what's still missing,
    plus jailbreak status.
 7. **Jailbreak bootstrap (after restore)** — see [Jailbreak](#jailbreak-what-you-get-honestly).

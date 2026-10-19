@@ -8,8 +8,8 @@ that installs a small Android launcher app on flash.
 
 | Dir | Module zip | App | What it does |
 |---|---|---|---|
-| [`general-kvm/`](general-kvm/) | `qemu-kvm-launcher-v1.0.3.zip` | **QEMU KVM** | Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware **KVM** acceleration |
-| [`ios-t8030/`](ios-t8030/) | `qemu-t8030-launcher-v1.1.3.zip` | **iOS Emu (t8030)** | Boot an emulated **iPhone 11 (t8030)**, iOS 14.x, in Inferno under TCG; auto-downloads the IPSW from Apple on first run |
+| [`general-kvm/`](general-kvm/) | `qemu-kvm-launcher-v1.0.4.zip` | **QEMU KVM** | Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware **KVM** acceleration |
+| [`ios-t8030/`](ios-t8030/) | `qemu-t8030-launcher-v1.1.4.zip` | **iOS Emu (t8030)** | Boot an emulated **iPhone 11 (t8030)**, iOS 14.x, in Inferno under TCG; auto-downloads the IPSW from Apple on first run |
 
 ## How the modules work
 

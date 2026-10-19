@@ -1,8 +1,10 @@
 package com.macoskvm.launcher;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -32,6 +34,11 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout buttons;
     private File payload;
     private boolean busy = false;
+    private MaterialButton vncButton;
+    private volatile boolean vncWatch = false;
+    private volatile boolean resumed = false;
+    static final String VNC_HOST = "127.0.0.1";
+    static final int VNC_PORT = 5900;
 
     @Override
     protected void onCreate(@Nullable Bundle b) {
@@ -41,6 +48,16 @@ public class MainActivity extends AppCompatActivity {
         logText = findViewById(R.id.logText);
         logScroll = findViewById(R.id.logScroll);
         buttons = findViewById(R.id.buttons);
+
+        vncButton = new MaterialButton(this);
+        vncButton.setText("Open VNC viewer (" + VNC_HOST + ":" + VNC_PORT + ")");
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        vlp.topMargin = 8;
+        vncButton.setLayoutParams(vlp);
+        vncButton.setOnClickListener(v -> openViewer());
+        buttons.addView(vncButton);
 
         for (final Steps.Step s : Steps.STEPS) {
             MaterialButton btn = new MaterialButton(this);
@@ -88,11 +105,14 @@ public class MainActivity extends AppCompatActivity {
         setButtonsEnabled(false);
         String cmd = s.command.replace("{P}", payload.getAbsolutePath());
         appendLog("\n$ " + cmd);
+        final boolean isBoot = s.label.contains("Boot");
+        if (isBoot) watchVncAndOpen();
         ScriptRunner.run(cmd, new ScriptRunner.Listener() {
             @Override public void onLine(String line) { main.post(() -> appendLog(line)); }
             @Override public void onFinished(int code) {
                 main.post(() -> {
                     appendLog("[exit " + code + "]");
+                    if (isBoot) vncWatch = false;
                     busy = false;
                     setButtonsEnabled(true);
                 });
@@ -101,8 +121,49 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setButtonsEnabled(boolean en) {
-        for (int i = 0; i < buttons.getChildCount(); i++) buttons.getChildAt(i).setEnabled(en);
+        for (int i = 0; i < buttons.getChildCount(); i++) {
+            View b = buttons.getChildAt(i);
+            if (b != vncButton) b.setEnabled(en);   // viewer stays usable while a VM runs
+        }
     }
+
+    private void openViewer() {
+        Intent i = new Intent(this, VncActivity.class);
+        i.putExtra(VncActivity.EXTRA_HOST, VNC_HOST);
+        i.putExtra(VncActivity.EXTRA_PORT, VNC_PORT);
+        startActivity(i);
+    }
+
+    /** After Boot starts: poll the VNC port for ~60 s and open the viewer once it accepts. */
+    private void watchVncAndOpen() {
+        if (vncWatch) return;
+        vncWatch = true;
+        appendLog("[vnc] waiting for " + VNC_HOST + ":" + VNC_PORT + " (up to 60 s)…");
+        new Thread(() -> {
+            long deadline = System.currentTimeMillis() + 60_000;
+            boolean up = false;
+            while (vncWatch && !up && System.currentTimeMillis() < deadline) {
+                up = VncActivity.waitForPort(VNC_HOST, VNC_PORT, 2000);
+            }
+            final boolean ok = up, stillBooting = vncWatch;
+            vncWatch = false;
+            main.post(() -> {
+                if (ok) {
+                    appendLog("[vnc] port is up, opening viewer");
+                    if (resumed) openViewer();
+                    else appendLog("[vnc] app in background; tap 'Open VNC viewer'");
+                } else if (stillBooting) {
+                    appendLog("[vnc] no VNC after 60 s; tap 'Open VNC viewer' when the VM is up");
+                } else {
+                    appendLog("[vnc] boot step ended before VNC came up");
+                }
+            });
+        }, "vnc-watch").start();
+    }
+
+    @Override protected void onResume() { super.onResume(); resumed = true; }
+
+    @Override protected void onPause() { resumed = false; super.onPause(); }
 
     private void appendLog(String line) {
         if (logText.getText().length() > 0) logText.append("\n");

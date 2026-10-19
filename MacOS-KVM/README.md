@@ -8,9 +8,32 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.0.3.zip`**
+- Module zip: **`macos-kvm-launcher-v1.0.4.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## Built-in VNC viewer (v1.0.4)
+
+The launcher app has its own VNC viewer, so no separate VNC app is needed.
+
+- **Open VNC viewer (127.0.0.1:5900)** button at the top of the step list. It
+  stays enabled while a step is running, so you can open it while the VM is up.
+- The **Boot** step opens the viewer automatically as soon as
+  `127.0.0.1:5900` accepts connections (it watches for about 60 s).
+- The viewer retries the connection for about 60 s while QEMU is still starting,
+  and shows **Disconnected — tap to reconnect** if the VM stops.
+- Screen is drawn **fit-to-screen**; **pinch** to zoom (up to 8×), **two-finger
+  drag** to pan, **Fit** resets.
+- **Tap** = left click, **one-finger drag** = move with the left button held,
+  **long press** = right click. A hardware mouse (hover + wheel) also works.
+- **Keyboard** toolbar button shows/hides the soft keyboard; typed text is sent
+  as key events. Extra toolbar keys: **Esc** and **Ctrl+C**. Hardware keyboards
+  work too (arrows, Home/End, PgUp/PgDn, modifiers).
+- **Back** closes the viewer only; the VM keeps running.
+- Protocol: RFB 3.8 (3.3/3.7 accepted), security type *None* (QEMU's default
+  `-display vnc=127.0.0.1:0` has no password), Raw + CopyRect encodings,
+  DesktopSize so guest resolution changes are followed. Written in plain Java,
+  no extra libraries.
 
 ## v1.0.3
 
@@ -80,7 +103,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.0.3.zip`, reboot.
+   `macos-kvm-launcher-v1.0.4.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -101,8 +124,8 @@ On flash, `customize.sh` also stages everything under
    sonoma` and converts `BaseSystem.dmg` → `BaseSystem.img` with `dmg2img`.
    Needs network. Apple EULA applies.
 5. **Boot macOS 14 (TCG / VNC :5900)** — starts `qemu-system-x86_64` with
-   `-accel tcg,thread=multi` (no `-enable-kvm`). Connect a VNC viewer on the
-   phone to `127.0.0.1:5900`.
+   `-accel tcg,thread=multi` (no `-enable-kvm`). The built-in viewer opens on
+   its own once `127.0.0.1:5900` is up (or tap **Open VNC viewer**).
 
 ### Display
 
