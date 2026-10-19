@@ -9,7 +9,7 @@ that installs a small Android launcher app on flash.
 | Dir | Module zip | App | What it does |
 |---|---|---|---|
 | [`general-kvm/`](general-kvm/) | `qemu-kvm-launcher-v1.0.0.zip` | **QEMU KVM** | Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware **KVM** acceleration |
-| [`ios-t8030/`](ios-t8030/) | `qemu-t8030-launcher-v1.0.0.zip` | **iOS Emu (t8030)** | Boot an emulated **iPhone 11 (t8030)**, iOS 14.x, in Inferno (ex‑QEMUAppleSilicon) under TCG |
+| [`ios-t8030/`](ios-t8030/) | `qemu-t8030-launcher-v1.1.0.zip` | **iOS Emu (t8030)** | Boot an emulated **iPhone 11 (t8030)**, iOS 14.x, in Inferno under TCG; auto-downloads the IPSW from Apple on first run |
 
 ## How the modules work
 
@@ -40,7 +40,9 @@ streaming the log on screen.
   be created. Without KVM everything falls back to **slow TCG**.
 - **x86_64 guests on this ARM phone run under TCG** (no KVM across
   architectures) — usable but slow.
-- **iOS emulation is TCG-only, slow, no GPU, bring-up quality**, and needs a
-  **legal IPSW you supply yourself**. Nothing copyrighted from Apple is shipped.
+- **iOS emulation is TCG-only, slow, no GPU, bring-up quality.** The
+  launcher **auto-downloads** the reference IPSW from Apple's CDN on first
+  "Download & Configure" (~5.5 GB). Nothing copyrighted from Apple is
+  shipped in the repo — it is fetched at runtime for your own use.
 
 See each subdirectory's README for exact commands and caveats.

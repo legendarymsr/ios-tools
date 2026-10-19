@@ -39,6 +39,14 @@ qemu-img create -f qcow2 guest.qcow2 16G
 `/dev/kvm` works, else falls back to TCG. `run-woa.sh` boots Windows on ARM (you
 supply the Windows ARM64 ISO + virtio-win drivers).
 
+### Guest images (you supply these)
+
+Unlike the iOS t8030 module, **general-kvm does not auto-download an OS
+image**. Copy any ARM64 Linux ISO (Ubuntu, Debian, Fedora, …) or a Windows
+on ARM ISO into the chroot yourself (adb push, Download folder, etc.) and
+pass it to `run-arm64-linux.sh` / `run-woa.sh`. That keeps the module small
+and avoids redistributing third-party install media.
+
 ### Display
 
 GUI output defaults to a **VNC server** (`-display vnc=127.0.0.1:0`) — connect

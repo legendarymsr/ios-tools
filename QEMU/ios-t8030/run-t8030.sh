@@ -2,16 +2,27 @@
 #
 # run-t8030.sh  --  boot the emulated iPhone 11 (t8030) in Inferno.
 # Run INSIDE the Debian chroot, from the data folder prepared by
-# prepare-ios-files.sh. TCG only (the guest is an Apple A13) => SLOW, no GPU
-# accel, bring-up quality. Expect multi-minute boots and a strong phone.
+# download-and-configure.sh / prepare-ios-files.sh. TCG only (the guest is an
+# Apple A13) => SLOW, no GPU accel, bring-up quality. Expect multi-minute boots
+# and a strong phone.
 #
-# Adjust the firmware component filenames to match YOUR ipsw (the 038-xxxxx
-# trustcache/ramdisk numbers differ per build). Defaults match iOS 14.0 beta 5.
+# If run.env exists (written by download-and-configure.sh), it is sourced and
+# supplies KERNEL/DTB/TRUSTCACHE/TICKET/SEPFW/SEPROM/RAMDISK automatically.
+# Otherwise defaults match iOS 14.0 beta 5 filenames.
 set -eu
 QEMU="${QEMU:-/root/Inferno/build/qemu-system-aarch64}"
 DATA="${DATA:-$PWD}"
-RESTORE="${RESTORE:-$DATA/Restore}"
 
+if [ -f "$DATA/run.env" ]; then
+  # shellcheck disable=SC1091
+  set -a
+  # shellcheck disable=SC1090
+  . "$DATA/run.env"
+  set +a
+  echo "[*] loaded $DATA/run.env"
+fi
+
+RESTORE="${RESTORE:-$DATA/Restore}"
 TRUSTCACHE="${TRUSTCACHE:-$RESTORE/Firmware/038-44135-124.dmg.trustcache}"
 KERNEL="${KERNEL:-$RESTORE/kernelcache.research.iphone12b}"
 DTB="${DTB:-$RESTORE/Firmware/all_flash/DeviceTree.n104ap.im4p}"
@@ -21,13 +32,19 @@ SEPROM="${SEPROM:-$DATA/AppleSEPROM-Cebu-B1}"
 RAMDISK="${RAMDISK:-}"   # set to the Erase/Upgrade RAM disk .dmg to restore
 
 [ -x "$QEMU" ] || { echo "qemu-system-aarch64 not found at $QEMU (build Inferno first)"; exit 1; }
-for f in "$TICKET" "$SEPFW" "$SEPROM" "$KERNEL" "$DTB"; do
-  [ -f "$f" ] || echo "[!] missing: $f  (see prepare-ios-files.sh)"
+missing=0
+for f in "$TICKET" "$SEPFW" "$SEPROM" "$KERNEL" "$DTB" "$TRUSTCACHE"; do
+  if [ ! -f "$f" ]; then
+    echo "[!] missing: $f  (run download-and-configure.sh first)"
+    missing=1
+  fi
 done
+[ "$missing" = "0" ] || exit 1
 
 INITRD=""
-[ -n "$RAMDISK" ] && INITRD="-initrd $RAMDISK"
+[ -n "$RAMDISK" ] && [ -f "$RAMDISK" ] && INITRD="-initrd $RAMDISK"
 
+echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true \
   -kernel "$KERNEL" -dtb "$DTB" \

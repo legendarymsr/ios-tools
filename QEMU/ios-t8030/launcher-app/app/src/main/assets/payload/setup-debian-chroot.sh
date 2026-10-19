@@ -42,7 +42,7 @@ if [ ! -e "$ROOTFS/etc/os-release" ]; then
 fi
 
 echo "[*] Copying helper scripts into chroot /root (if present)"
-for f in install-qemu.sh run-arm64-linux.sh run-woa.sh setup-build-deps.sh build-inferno.sh run-t8030.sh prepare-ios-files.sh; do
+for f in install-qemu.sh run-arm64-linux.sh run-woa.sh setup-build-deps.sh build-inferno.sh run-t8030.sh prepare-ios-files.sh download-and-configure.sh; do
   [ -f "$(dirname "$0")/$f" ] && cp -f "$(dirname "$0")/$f" "$ROOTFS/root/" 2>/dev/null || true
 done
 chmod +x "$ROOTFS"/root/*.sh 2>/dev/null || true

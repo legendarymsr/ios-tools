@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.0.0.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.0.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -15,18 +15,21 @@ installs the **iOS Emu (t8030)** launcher app.
 - The guest CPU is an **Apple A13**, so there is **no KVM** — it's pure **TCG
   emulation**: very slow (multi-minute boots), **no GPU** acceleration, software
   rendering only. This is bring-up/research quality, not a daily driver.
-- You must supply your **own legal IPSW**. Nothing from Apple is shipped here.
-  Reference target: **iOS 14.0 beta 5 for iPhone12,1** (iPhone 11). Inferno
-  supports iOS 14.x on t8030 today (older/newer versions are WIP upstream).
-- Inferno is built **on-device inside a Debian (glibc) chroot** — there is no
-  Android/bionic build of QEMU. On an 8 GB-class phone the build is heavy; a
-  strong phone with lots of RAM/storage is strongly recommended.
-- "Can't it just build Firefox ESR…" — no shortcut here either: the iOS kernel
-  must be emulated as Apple hardware; that's what Inferno does.
+- **IPSW auto-download.** On first "Download & Configure" the app pulls the
+  Inferno reference IPSW **directly from Apple's CDN** onto your phone
+  (~5.5 GB). Nothing from Apple is shipped in this repo or the module zip.
+  Apple's license covers downloading firmware yourself from Apple; it does
+  **not** cover redistributing IPSWs. Do not re-upload the file.
+- Reference target: **iOS 14.0 beta 5 for iPhone12,1** (build `18A5351d`).
+  Inferno supports iOS 14.x on t8030 today.
+- Inferno is built **on-device inside a Debian (glibc) chroot**. On an 8 GB-class
+  phone the build is heavy; a strong phone with lots of RAM/storage is strongly
+  recommended. Plan on **≥10 GB free** before Download & Configure
+  (IPSW + extract + sparse root disk).
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.0.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.0.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -36,40 +39,48 @@ installs the **iOS Emu (t8030)** launcher app.
 2. **Install build deps** — git, meson/ninja, glib, pixman, gnutls, nettle
    (built from source if Debian's is < 3.10), lzfse, SDL/GTK, etc.
 3. **Build Inferno** — clones `ChefKissInc/Inferno` (pinned commit), configures
-   with `--target-list=aarch64-softmmu,x86_64-softmmu` and `ninja`. Produces real
-   aarch64 **Linux** (glibc) `qemu-system-aarch64` / `qemu-img` that run in the
-   chroot. **Long build.**
-4. **Show iOS file-prep steps** — prints `prepare-ios-files.sh`.
-5. **Show t8030 run command** — prints `run-t8030.sh`.
+   with `--target-list=aarch64-softmmu,x86_64-softmmu` and `ninja`. **Long build.**
+4. **Download & Configure (Apple IPSW)** — the one-tap setup:
+   - `curl -C -` resumes the IPSW from Apple's CDN
+   - verifies the expected `Content-Length` (5507405643 bytes)
+   - creates Inferno backing disks (`qemu-img`)
+   - extracts the IPSW into `/root/InfernoData/Restore`
+   - fetches ChefKiss `create_apticket.py` / `create_septicket.py` / `ticket.shsh2`
+   - fetches `AppleSEPROM-Cebu-B1` from [securerom.fun](https://securerom.fun)
+   - forges `root_ticket.der` + `sep_root_ticket.der`
+   - builds [xerub/img4lib](https://github.com/xerub/img4lib), looks up the
+     SEP IV+Key for this build from
+     [The Apple Wiki](https://theapplewiki.com/wiki/Keys:AzulSeed_18A5351d_(iPhone12,1))
+     at runtime (keys are **not** stored in the repo), decrypts/rewraps
+     `sep-firmware.n104.RELEASE.new.img4`
+   - auto-detects kernel / DeviceTree / trustcache / ramdisk filenames
+   - writes `run.env` + `READY` so Boot just works
+5. **Boot iOS (t8030)** — runs `run-t8030.sh` (VNC on `127.0.0.1:5900`).
+6. **Show READY status** — prints what was configured / what's still missing.
 
-### Supplying iOS files (inside the chroot)
+### Apple IPSW URL used
 
-Follow https://chefkiss.dev/guides/inferno/file-setup/ — summarised in
-`prepare-ios-files.sh`:
-
-```sh
-./prepare-ios-files.sh /path/to/iPhone11,8,iPhone12,1_14.0_18A5351d_Restore.ipsw
-# creates the raw backing disks + extracts the IPSW into ./Restore
-pip install pyasn1 pyasn1-modules
-python3 create_apticket.py n104ap Restore/BuildManifest.plist ticket.shsh2 root_ticket.der
-# place SEP ROM dump  AppleSEPROM-Cebu-B1  (t8030/iPhone 11 = "Cebu B1")
-# build img4 util + prepare sep-firmware.n104.RELEASE.new.img4
+```
+https://updates.cdn-apple.com/2020SummerSeed/fullrestores/001-35886/5FE9BE2E-17F8-41C8-96BB-B76E2B225888/iPhone11,8,iPhone12,1_14.0_18A5351d_Restore.ipsw
 ```
 
-The `create_apticket.py` script, the `img4` utility, and SEP ROM dumps come from
-the ChefKiss guide/tooling, not from this repo.
+Filename: `iPhone11,8,iPhone12,1_14.0_18A5351d_Restore.ipsw` · size `5507405643`
+bytes (verified via HTTP HEAD, Oct 2026). Same URL the ChefKiss file-setup guide
+and the NixOS iOS-emulation wiki document.
 
-### Run
+### Manual / advanced
 
 ```sh
-./run-t8030.sh                       # boot (adjust firmware filenames to your ipsw)
-RAMDISK=Restore/038-44135-124.dmg ./run-t8030.sh   # restore/upgrade
+# inside the chroot
+DATA=/root/InfernoData bash /root/download-and-configure.sh
+cd /root/InfernoData && bash /root/run-t8030.sh
+# restore/upgrade ramdisk:
+RAMDISK=Restore/038-….dmg bash /root/run-t8030.sh
 ```
 
-Display defaults to a **VNC server** (`-display vnc=127.0.0.1:0`) — connect with
-a VNC viewer on the phone. Override via `DISPLAY_QEMU`. Restore itself is done
-from a companion VM with `idevicerestore` (see the upstream "Running &
-Restoring" guide).
+A full IPSW restore still needs the companion VM + `idevicerestore` (see the
+upstream "Running & Restoring" guide). First boot without a prior restore may
+not reach SpringBoard — that is expected.
 
 ## Scripts
 
@@ -78,14 +89,19 @@ Restoring" guide).
   needed).
 - `build-inferno.sh` — clone + configure + build Inferno (pinned commit
   `cc4302a`, override with `REF=`).
-- `prepare-ios-files.sh` — create disks + extract IPSW + checklist for
-  ticket/SEP.
-- `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line.
+- `download-and-configure.sh` — **new in v1.1.0**: Apple IPSW download + full
+  file prep + `run.env`.
+- `prepare-ios-files.sh` — create disks + extract IPSW (called by the
+  downloader; safe to re-run).
+- `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line;
+  sources `run.env` when present.
 
 ## Verified vs not
 
-- Verified on the build host: both APKs assemble; scripts pass `bash -n`; module
-  zip has `module.prop` at root; the `t8030` command line and build flags match
-  the current upstream guide (Oct 2026).
-- **Not** verified: the on-device Inferno build, the IPSW/ticket/SEP prep, and an
-  actual iOS boot (no phone/IPSW on the build host).
+- Verified on the build host: APK assembles; scripts pass `bash -n`; module zip
+  has `module.prop` at root; Apple CDN URL returns HTTP 200 with the expected
+  `Content-Length`; ChefKiss extras + SEPROM URLs return 200; Apple Wiki keys
+  page parses (`#keypage-sepfirmware-iv` / `-key`).
+- **Not** verified: the on-device Inferno build, a live 5.5 GB IPSW download on a
+  phone, img4 decrypt/rewrap of SEP firmware, and an actual iOS boot (no phone
+  on the build host). Treat on-device steps as "should work", not "tested here".
