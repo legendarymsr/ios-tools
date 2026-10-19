@@ -18,7 +18,7 @@ public final class Steps {
         new Step("2. Expose /dev/kvm (chmod 666)",
             "if [ -e /dev/kvm ]; then chmod 666 /dev/kvm && echo \"ready: $(ls -l /dev/kvm)\"; "
           + "else echo \"NO /dev/kvm — kernel lacks CONFIG_KVM or does not expose it (see README)\"; fi"),
-        new Step("3. Set up Debian chroot",
+        new Step("3. Install & update Debian (chroot)",
             "ROOTFS=/data/local/debian sh {P}/setup-debian-chroot.sh"),
         new Step("4. Install QEMU in chroot",
             "cp {P}/install-qemu.sh /data/local/debian/root/ 2>/dev/null; "

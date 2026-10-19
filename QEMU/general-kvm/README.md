@@ -4,9 +4,20 @@ Run ARM64 Linux and Windows-on-ARM guests under QEMU with hardware **KVM**
 acceleration on a rooted phone. Packaged as a KernelSU/Magisk module that
 installs the **QEMU KVM** launcher app.
 
-- Module zip: **`qemu-kvm-launcher-v1.0.2.zip`**
+- Module zip: **`qemu-kvm-launcher-v1.0.3.zip`**
 - App package: `com.qemukvm.launcher` (label "QEMU KVM")
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.3
+
+- **v1.0.3 Install & update Debian:** step 1 is now **Install & update Debian**.
+  After the rootfs is in place (or if it already is) it runs `apt-get update`
+  and `apt-get upgrade -y` inside the chroot and stops with a clear error if
+  either fails. Re-running it on an existing install just updates Debian.
+  apt downloads as root (`APT::Sandbox::User "root"`), because Android only
+  lets the inet group open sockets. `enter-debian.sh` now enters with a clean
+  Debian environment, which removes the `/etc/profile: id: command not found`
+  noise.
 
 ## v1.0.2
 
@@ -20,19 +31,19 @@ installs the **QEMU KVM** launcher app.
   steps, and their exit codes, the download size and the archive type are
   logged. Any failure wipes the partial tree (stale bind mounts are unmounted
   first) and exits non-zero. Re-running cleans up leftovers from earlier runs.
-  If your last attempt failed, just tap **Set up Debian chroot** again.
+  If your last attempt failed, just tap **Install & update Debian** again.
 
 ## v1.0.1
 
 - Fixed Debian chroot bootstrap on Android: rootfs URL now resolves a current
   linuxcontainers.org bookworm/arm64 `rootfs.tar.xz` (~95 MB), with size/type
   checks and cleanup on failure. Bundles static `xz-arm64` (Android toybox tar
-  has no xz). Re-flash/re-run **Set up Debian chroot** if a prior run failed.
+  has no xz). Re-flash/re-run **Install & update Debian** if a prior run failed.
 
 ## Install
 
 1. Open the **KernelSU manager → Modules → Install from storage**, pick
-   `qemu-kvm-launcher-v1.0.2.zip`, reboot.
+   `qemu-kvm-launcher-v1.0.3.zip`, reboot.
 2. "QEMU KVM" appears in your app drawer. Open it and grant root.
 
 (Manual alternative: `adb install launcher-app/app/build/outputs/apk/debug/app-debug.apk`.)
@@ -42,7 +53,7 @@ installs the **QEMU KVM** launcher app.
 1. **Check /dev/kvm** — runs the bundled `kvmcheck` and tells you whether KVM is
    truly usable (device node, API version, caps, and an actual `KVM_CREATE_VM`).
 2. **Expose /dev/kvm (chmod 666)** — makes the node usable by the chroot/app.
-3. **Set up Debian chroot** — downloads a Debian arm64 rootfs to
+3. **Install & update Debian** — downloads a Debian arm64 rootfs to
    `/data/local/debian` and writes `/data/local/enter-debian.sh` (a real chroot
    with `/dev`, `/proc`, `/sys` and `/dev/kvm` bind-mounted).
 4. **Install QEMU in chroot** — `apt install qemu-system-arm qemu-system-x86 …`

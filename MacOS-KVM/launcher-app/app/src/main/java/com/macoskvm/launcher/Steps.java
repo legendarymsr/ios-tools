@@ -14,7 +14,7 @@ public final class Steps {
     }
 
     public static final Step[] STEPS = new Step[] {
-        new Step("1. Set up Debian chroot",
+        new Step("1. Install & update Debian (chroot)",
             "ROOTFS=/data/local/debian sh {P}/setup-debian-chroot.sh"),
         new Step("2. Install qemu-system-x86 in chroot",
             "cp {P}/install-qemu-x86.sh /data/local/debian/root/ 2>/dev/null; "

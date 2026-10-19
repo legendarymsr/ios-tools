@@ -293,12 +293,41 @@ grep -q " \$ROOTFS/proc " /proc/mounts || { busybox mount --bind /proc "\$ROOTFS
 grep -q " \$ROOTFS/sys " /proc/mounts || { busybox mount --bind /sys "\$ROOTFS/sys" 2>/dev/null || mount -o bind /sys "\$ROOTFS/sys"; }
 # /dev/kvm comes through the /dev bind above. Make sure it is accessible:
 [ -e /dev/kvm ] && chmod 666 /dev/kvm 2>/dev/null || echo "WARN: /dev/kvm missing - see README (no custom kernel?)"
-if [ "\$#" -gt 0 ]; then exec chroot "\$ROOTFS" /bin/bash -lc "\$*"; else exec chroot "\$ROOTFS" /bin/bash -l; fi
+# Start from a clean Debian environment: Android's PATH (/system/bin...) does
+# not exist inside the chroot and made /etc/profile print "id: command not found".
+CENV="/usr/bin/env -i HOME=/root TERM=\${TERM:-xterm-256color} LANG=C.UTF-8 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+if [ "\$#" -gt 0 ]; then exec chroot "\$ROOTFS" \$CENV /bin/bash -lc "\$*"; else exec chroot "\$ROOTFS" \$CENV /bin/bash -l; fi
 ENTER
 chmod +x "$(dirname "$ROOTFS")/enter-debian.sh"
+
+# ---------- install + update Debian packages inside the chroot ----------
+# Android kernels only let the inet group (3003) open sockets, so apt's
+# unprivileged _apt download user can fail with "Could not create socket".
+# Download as root instead.
+mkdir -p "$ROOTFS/etc/apt/apt.conf.d"
+printf 'APT::Sandbox::User "root";\n' > "$ROOTFS/etc/apt/apt.conf.d/01android-sandbox" \
+  || fail "could not write apt sandbox config"
+
+ENTER_SH="$(dirname "$ROOTFS")/enter-debian.sh"
+apt_fail() {
+  echo "    ERROR: $*" >&2
+  echo "    The Debian rootfs itself is installed; check Wi-Fi/DNS and re-run step 1 to retry the update." >&2
+  exit 1
+}
+log "Updating Debian: apt-get update"
+ok=0
+for i in 1 2 3; do
+  if sh "$ENTER_SH" 'DEBIAN_FRONTEND=noninteractive apt-get update'; then ok=1; break; fi
+  log "apt-get update failed (attempt $i/3), retrying in 5s..."
+  sleep 5
+done
+[ "$ok" = 1 ] || apt_fail "apt-get update failed inside the chroot (see apt errors above)."
+log "Updating Debian: apt-get upgrade -y"
+sh "$ENTER_SH" 'DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade' \
+  || apt_fail "apt-get upgrade failed inside the chroot (see apt errors above)."
+log "Debian is installed and up to date: $(grep '^PRETTY_NAME=' "$ROOTFS/usr/lib/os-release" 2>/dev/null || echo '?')"
 
 echo
 echo "[done] Enter the chroot any time with:"
 echo "    su -c $(dirname "$ROOTFS")/enter-debian.sh"
 echo
-echo "Then inside: apt-get update && apt-get install -y curl ca-certificates xz-utils"

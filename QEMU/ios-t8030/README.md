@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.2.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.3.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -19,6 +19,21 @@ installs the **iOS Emu (t8030)** launcher app.
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.1.3 Install & update Debian:** step 1 is now **Install & update Debian**.
+  After the rootfs is in place (or if it already is) it runs `apt-get update`
+  and `apt-get upgrade -y` inside the chroot and stops with a clear error if
+  either fails. Re-running it on an existing install just updates Debian.
+  apt downloads as root (`APT::Sandbox::User "root"`), because Android only
+  lets the inet group open sockets. `enter-debian.sh` now enters with a clean
+  Debian environment, which removes the `/etc/profile: id: command not found`
+  noise.
+- **v1.1.3 lzfse fix (step 2):** Debian bookworm has no `liblzfse-dev` / `lzfse`
+  packages, so `apt-get install` failed. `setup-build-deps.sh` now installs the
+  rest from apt (plus `cmake`), then builds lzfse from
+  [lzfse/lzfse](https://github.com/lzfse/lzfse) at pinned commit `e634ca5`
+  into `/usr/local` (`liblzfse.so`, `lzfse.h`, `lzfse` CLI), and checks that a
+  test program links against `-llzfse`. Any apt or build failure stops the step
+  with an `[ERROR]` line.
 - **v1.1.2 chroot fix:** the "can't create .../etc/resolv.conf" failure came
   from the Debian image's `etc/resolv.conf`, which is an absolute symlink into
   `/run/systemd/...`. Writing through it from Android followed it onto the
@@ -46,15 +61,17 @@ installs the **iOS Emu (t8030)** launcher app.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.2.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.3.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
 
-1. **Set up Debian chroot** — Debian arm64 rootfs at `/data/local/debian` +
-   `/data/local/enter-debian.sh`.
+1. **Install & update Debian** — Debian arm64 rootfs at `/data/local/debian` +
+   `/data/local/enter-debian.sh`, then `apt-get update` + `apt-get upgrade -y`
+   inside the chroot. Re-run any time to update Debian.
 2. **Install build deps** — git, meson/ninja, glib, pixman, gnutls, nettle
-   (built from source if Debian's is < 3.10), lzfse, SDL/GTK, etc.
+   (built from source if Debian's is < 3.10), lzfse (built from source;
+   bookworm has no package), SDL/GTK, etc.
 3. **Build Inferno** — clones `ChefKissInc/Inferno` (pinned commit), configures
    with `--target-list=aarch64-softmmu,x86_64-softmmu` and `ninja`. **Long build.**
 4. **Download & Configure (Apple IPSW)** — the one-tap setup:

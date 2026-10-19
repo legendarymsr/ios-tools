@@ -8,9 +8,20 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.0.2.zip`**
+- Module zip: **`macos-kvm-launcher-v1.0.3.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.3
+
+- **v1.0.3 Install & update Debian:** step 1 is now **Install & update Debian**.
+  After the rootfs is in place (or if it already is) it runs `apt-get update`
+  and `apt-get upgrade -y` inside the chroot and stops with a clear error if
+  either fails. Re-running it on an existing install just updates Debian.
+  apt downloads as root (`APT::Sandbox::User "root"`), because Android only
+  lets the inet group open sockets. `enter-debian.sh` now enters with a clean
+  Debian environment, which removes the `/etc/profile: id: command not found`
+  noise.
 
 ## v1.0.2
 
@@ -24,7 +35,7 @@ a working Debian chroot path should be able to run the same scripts.
   steps, and their exit codes, the download size and the archive type are
   logged. Any failure wipes the partial tree (stale bind mounts are unmounted
   first) and exits non-zero. Re-running cleans up leftovers from earlier runs.
-  If your last attempt failed, just tap **Set up Debian chroot** again.
+  If your last attempt failed, just tap **Install & update Debian** again.
 
 ## v1.0.1
 
@@ -69,7 +80,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.0.2.zip`, reboot.
+   `macos-kvm-launcher-v1.0.3.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -79,7 +90,7 @@ On flash, `customize.sh` also stages everything under
 
 ## Use (buttons in the app, top to bottom)
 
-1. **Set up Debian chroot** — downloads a Debian arm64 rootfs to
+1. **Install & update Debian** — downloads a Debian arm64 rootfs to
    `/data/local/debian` and writes `/data/local/enter-debian.sh` (real chroot
    with `/dev`/`/proc`/`/sys` and `/data/local/osx-kvm` bind-mounted).
 2. **Install qemu-system-x86 in chroot** — `apt install qemu-system-x86`
