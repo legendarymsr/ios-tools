@@ -23,7 +23,7 @@
 # to the blank backup and restores again.
 #
 # Env: DATA (/root/InfernoData), ECID (0x1122334455667788), MUX_PORT (27015),
-#      DEVICE_TIMEOUT (s to wait for the restore ramdisk, default 10800),
+#      DEVICE_TIMEOUT (s to wait for the restore ramdisk, default 21600),
 #      SKIP_FS_PATCHES=1 (mark restored without the FS patches).
 set -u
 DATA="${DATA:-/root/InfernoData}"
@@ -230,20 +230,30 @@ if [ "$(state)" = new ]; then
     setsid bash "$HERE/run-t8030.sh" > "$R/inferno.log" 2>&1 < /dev/null &
   IOS_PID=$!
 
-  log "waiting for the restore ramdisk to show up over USB (TCG: often 10-40 min)"
+  # usb_link: has the iOS VM connected to the USB-host VM's usb-tcp-remote
+  # socket yet? Inferno connects once, when iOS enables its USB controller.
+  usb_link() {
+    local n; n=$(awk -v p="$USB_SOCK" '$NF == p' /proc/net/unix 2>/dev/null | wc -l)
+    if [ "$n" -ge 2 ]; then echo "connected"; elif [ "$n" -ge 1 ]; then echo "not yet"; else echo "no socket"; fi
+  }
+  log "waiting for the restore ramdisk to show up over USB (TCG on a phone: often 20-90 min)"
   t0=$(date +%s); next=0; udid=""
   while :; do
     kill -0 "$IOS_PID" 2>/dev/null || { show_panic; die "the iOS VM exited before the device appeared (panic/log above)"; }
-    bash "$HERE/companion-vm.sh" status | grep -q running || { tail -n 30 "$DATA/companion/console.log" "$DATA/companion/job.log"; die "the USB-host VM stopped (logs above)"; }
+    bash "$HERE/companion-vm.sh" status | grep -q running || { bash "$HERE/companion-vm.sh" report; tail -n 5 "$R/ios-serial.log" 2>/dev/null | tr -d '\r' | sed 's/^/[ios] /'; die "the USB-host VM stopped (reason and logs above)"; }
+    if grep -qE 'Cannot connect to server|Socket path too long|Port specified for UNIX socket' "$R/inferno.log" 2>/dev/null; then
+      grep -E 'Cannot connect|Socket path|Port specified' "$R/inferno.log" | tail -n 3
+      die "the iOS VM could not connect its USB port to the USB-host VM ($USB_SOCK) - tap the step again"
+    fi
     udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
     [ -n "$udid" ] && break
     el=$(( $(date +%s) - t0 ))
-    [ "$el" -lt "${DEVICE_TIMEOUT:-10800}" ] || { show_panic; grep -A6 'lsusb' "$DATA/companion/job.log" | tail -n 8; die "no device after ${DEVICE_TIMEOUT:-10800} s"; }
+    [ "$el" -lt "${DEVICE_TIMEOUT:-21600}" ] || { show_panic; bash "$HERE/companion-vm.sh" report; echo "iOS USB link: $(usb_link)"; die "no device after ${DEVICE_TIMEOUT:-21600} s"; }
     if [ "$el" -ge "$next" ]; then
-      printf '[*] %3d min: iOS: %s\n' $((el / 60)) "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
+      printf '[*] %3d min: USB link %s; iOS: %s\n' $((el / 60)) "$(usb_link)" "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
       next=$((next + 120))
     fi
-    sleep 10
+    sleep 15
   done
   log "device in restore mode: $udid ($(( ($(date +%s) - t0) / 60 )) min)"
 

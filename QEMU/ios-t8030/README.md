@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.4.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.5.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -98,7 +98,7 @@ Resuming and retrying:
 Limits:
 - Under TCG on a phone, the restore ramdisk can take 10-40+ min to come up and
   the restore itself can take hours. The step waits up to 3 h for the device
-  (`DEVICE_TIMEOUT`).
+  (`DEVICE_TIMEOUT`, default 6 h).
 - linux-apfs-rw write support is marked experimental upstream. If the FS-patch
   stage fails, the restore itself is still on disk. Do the patches on a Mac
   (fs-patches guide), then re-run step 5 with `SKIP_FS_PATCHES=1`.
@@ -114,6 +114,12 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.5 USB-host VM kept alive:**
+  - **Why the VM died:** the app's root shell and everything it starts (both QEMUs) lived in the app's cgroup. There, Android's phantom-process killer and its per-app process-group kill can SIGKILL a CPU-heavy QEMU once the launcher is in the background (for example while you watch the VNC viewer).
+  - **Steps now leave the app's cgroup:** steps 2-8 move themselves to the root cgroup (`/sys/fs/cgroup`, `/acct`) first. The USB-host VM also gets `oom_score_adj -800` and a 128 MB TCG code buffer (`COMPANION_TB_MB`).
+  - **usbmuxd is restarted:** if usbmuxd exits inside the VM, it is restarted (up to 5 times) and the exit status is logged, instead of the VM powering off.
+  - **Clearer failure report:** a wrapper records how QEMU ended (`companion/qemu.exit`: exit status or signal; 137 = SIGKILL). On failure, step 5 prints that reason, any host OOM lines, the last 40 console lines, the QEMU log, and the usbmuxd log without the client connect/disconnect lines. The same report is available with `bash /root/companion-vm.sh report`.
+  - **USB link in the progress line:** the 2-minute progress line shows whether the iOS VM has connected to the USB-host VM yet (`USB link connected/not yet`). Inferno connects only once, when iOS enables its USB controller, which can take an hour under TCG on a phone. If that connect fails, step 5 stops with a clear error. `DEVICE_TIMEOUT` is now 6 h.
 - **v1.2.4 SEP firmware rewrap fix:** on the phone, step 4's `img4 -A -F … -T rsep` wrote the IM4P type as `pesr`. xerub's img4lib only byte-swaps fourccs when `__LITTLE_ENDIAN__`, `__x86_64__` or `__i386__` is defined, and GCC on arm64 Linux defines none of them (it defines `__AARCH64EL__` / `__BYTE_ORDER__`). Every SEP firmware that step 4 built on the phone, in all earlier versions, therefore had the wrong type. That is the most likely cause of the `dart-sep` / `t8020dart invalid lock state` restore panic. Step 4 now writes the IMG4 itself (`check-sep.py wrap`): `IMG4 { IM4P { "rsep", <version string copied from the IPSW's im4p>, <decrypted payload> }, [0] <sep_root_ticket.der> }`. The output is byte-identical to what img4lib builds on x86_64. img4lib is still used only to decrypt, which is endian-safe, and new img4lib builds get `-D__LITTLE_ENDIAN__=1`. The `none` line in the log is img4lib's normal output, not an empty version string. Re-run step 4 (it replaces the bad file), then step 5.
 - **v1.2.3 SEP checks:** `panic(... caller 0xfffffff009686304): "t8020dart invalid lock state"` right after `Id(dart-sep) AppleT8020DART::_interruptHandler: DART interrupt while disabled by the client` means the SEP made a DMA access that faulted in the SEP DART. The ChefKiss FAQ entry for the related `dart-sep ... DART(DART) error` panic says "User error; bad SEP ROM or SEP Firmware", and issue #314 (iOS VM crashing after idevicerestore) was a wrong IV/key. iOS 14.0 beta 5 (18A5351d) on iPhone12,1 is still the target of the ChefKiss guide. New `check-sep.py` checks that the SEP ROM is the Cebu B1 dump (86016 bytes, sha256 `e3b11f62…`). It also checks that `sep-firmware.n104.RELEASE.new.img4` is an IMG4 of type `rsep` that holds a *decrypted* SEPOS, has the SEP ticket attached, and uses the exact IM4P version string of the IPSW's `sep-firmware.n104.RELEASE.im4p`. Step 4 now runs these checks: it downloads a bad SEP ROM again, moves a bad SEP firmware to `.bad` and rebuilds it, and stops with an `[ERROR]` if the IV/Key (from The Apple Wiki or `sep_ivkey.txt`) does not decrypt the SEP firmware. Steps 5 and 6 refuse to boot with bad SEP files. Re-run step 4 once after updating (it only redoes the SEP part); step 3 does not need to be re-run.
 - **v1.2.2 restore panic diagnostics:** the `IOPlatformPanicAction -> AppleS8960XWatchDogTimer / AppleT8030PMGR` and `wdog panic (attempt 1)` lines are printed for *every* iOS panic, so they don't show the cause, and `wdt=-1` is already passed. On failure, step 5 now prints the 40 lines before and after the first panic line and keeps every attempt's full serial log as `InfernoData/restore/ios-serial.<time>.log`. `-smp` now defaults to 7, as in the ChefKiss guide: Inferno uses one of the `-smp` CPUs for the emulated SEP, so 6 gave only 5 A13 cores. The USB-host VM uses 1 vCPU during the restore so the SEP and iOS cores get more of the phone's CPU. No Inferno rebuild needed.
@@ -193,7 +199,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.4.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.5.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
