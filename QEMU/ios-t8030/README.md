@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.4.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.5.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -84,7 +84,7 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.4.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.5.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -92,10 +92,11 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
 1. **Install & update Debian** — Debian arm64 rootfs at `/data/local/debian` +
    `/data/local/enter-debian.sh`, then `apt-get update` + `apt-get upgrade -y`
    inside the chroot. Re-run any time to update Debian.
-2. **Install build deps** — git, meson/ninja, glib, pixman, gnutls, nettle
+2. **Install build deps** — git, ninja, meson >= 1.5 (from PyPI; bookworm's is 1.0.1), glib, pixman, gnutls, nettle
    (built from source if Debian's is < 3.10), lzfse (built from source;
    bookworm has no package), SDL/GTK, etc.
-3. **Build Inferno** — clones `ChefKissInc/Inferno` (pinned commit), configures
+3. **Compile Inferno / qemu-t8030 in the chroot** — makes sure meson >= 1.5
+   is installed (pip, fails clearly otherwise), clones `ChefKissInc/Inferno` (pinned commit), configures
    with `--target-list=aarch64-softmmu,x86_64-softmmu` and `ninja`. **Long build.**
 4. **Download & Configure (Apple IPSW)** — the one-tap setup:
    - `curl -C -` resumes the IPSW from Apple's CDN

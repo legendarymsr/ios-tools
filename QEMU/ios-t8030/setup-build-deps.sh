@@ -42,6 +42,11 @@ apt-get install -y \
   xz-utils \
   || die "apt-get install failed - see the package error above"
 
+# --- meson >= 1.5 (Inferno needs it; bookworm ships 1.0.1) -----------------
+echo "[*] Installing meson>=1.5 from PyPI"
+pip3 install --upgrade --break-system-packages 'meson>=1.5' \
+  || die "pip install meson>=1.5 failed"
+
 # --- lzfse (from source) ----------------------------------------------------
 LZFSE_REPO="${LZFSE_REPO:-https://github.com/lzfse/lzfse}"
 LZFSE_REF="e634ca58b4821d9f3d560cdc6df5dec02ffc93fd"   # upstream master HEAD (2017-05-22)

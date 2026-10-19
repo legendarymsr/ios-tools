@@ -21,7 +21,7 @@ public final class Steps {
         new Step("2. Install build deps (chroot)",
             "cp {P}/setup-build-deps.sh /data/local/debian/root/ 2>/dev/null; "
           + "sh /data/local/enter-debian.sh 'bash /root/setup-build-deps.sh'"),
-        new Step("3. Build Inferno (chroot, long)",
+        new Step("3. Compile Inferno / qemu-t8030 in the chroot (long)",
             "cp {P}/build-inferno.sh /data/local/debian/root/ 2>/dev/null; "
           + "sh /data/local/enter-debian.sh 'bash /root/build-inferno.sh'"),
         new Step("4. Download & Configure (Apple IPSW)",
