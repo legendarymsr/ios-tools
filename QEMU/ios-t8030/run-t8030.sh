@@ -104,7 +104,7 @@ exec "$QEMU" \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "$BOOTARGS" \
   -smp "${SMP:-6}" -m "${MEM:-4G}" -serial mon:stdio \
-  ${DISPLAY_QEMU:--display vnc=127.0.0.1:0,show-cursor=on} \
+  ${DISPLAY_QEMU:--display vnc=127.0.0.1:0} \
   $INITRD \
   -drive file="$DATA/sep_nvram,if=pflash,format=raw" \
   -drive file="$DATA/sep_ssc,if=pflash,format=raw" \

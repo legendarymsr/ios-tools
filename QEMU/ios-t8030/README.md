@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.7.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.8.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -42,6 +42,7 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.1.8 step 5 VNC fix:** QEMU 10 rejected `-display vnc=…,show-cursor=on` (`Invalid parameter 'show-cursor'`). Default is now `-display vnc=127.0.0.1:0`.
 - **v1.1.7 step 3/4 fixes:**
   - Step 3 never produced `qemu-img` / `qemu-system-aarch64`. Inferno's
     `--enable-nettle` needs nettle >= 3.10; step 2 builds 3.10.2, but nettle
@@ -112,7 +113,7 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.7.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.8.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
