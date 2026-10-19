@@ -4,14 +4,21 @@ Run ARM64 Linux and Windows-on-ARM guests under QEMU with hardware **KVM**
 acceleration on a rooted phone. Packaged as a KernelSU/Magisk module that
 installs the **QEMU KVM** launcher app.
 
-- Module zip: **`qemu-kvm-launcher-v1.0.0.zip`**
+- Module zip: **`qemu-kvm-launcher-v1.0.1.zip`**
 - App package: `com.qemukvm.launcher` (label "QEMU KVM")
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.1
+
+- Fixed Debian chroot bootstrap on Android: rootfs URL now resolves a current
+  linuxcontainers.org bookworm/arm64 `rootfs.tar.xz` (~95 MB), with size/type
+  checks and cleanup on failure. Bundles static `xz-arm64` (Android toybox tar
+  has no xz). Re-flash/re-run **Set up Debian chroot** if a prior run failed.
 
 ## Install
 
 1. Open the **KernelSU manager → Modules → Install from storage**, pick
-   `qemu-kvm-launcher-v1.0.0.zip`, reboot.
+   `qemu-kvm-launcher-v1.0.1.zip`, reboot.
 2. "QEMU KVM" appears in your app drawer. Open it and grant root.
 
 (Manual alternative: `adb install launcher-app/app/build/outputs/apk/debug/app-debug.apk`.)

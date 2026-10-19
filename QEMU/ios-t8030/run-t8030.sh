@@ -2,9 +2,16 @@
 #
 # run-t8030.sh  --  boot the emulated iPhone 11 (t8030) in Inferno.
 # Run INSIDE the Debian chroot, from the data folder prepared by
-# download-and-configure.sh / prepare-ios-files.sh. TCG only (the guest is an
-# Apple A13) => SLOW, no GPU accel, bring-up quality. Expect multi-minute boots
-# and a strong phone.
+# download-and-configure.sh / prepare-ios-files.sh.
+#
+# Accel: Inferno's t8030 machine (ChefKiss/Inferno @ cc4302a) is TCG-only in
+# practice. The machine hardcodes TYPE_APPLE_A13 CPUs with Apple IMPDEF
+# sysregs (apple_a13_cp_reginfo_tcg), sets minimum_page_bits=14 (16 KiB pages),
+# and cannot use -cpu host. KVM on a generic ARM64 Android host cannot run
+# that guest CPU model, so we always pass -accel tcg. We still probe /dev/kvm
+# and log clearly so you can see whether host KVM exists for other guests.
+#
+# Expect multi-minute boots and a strong phone.
 #
 # If run.env exists (written by download-and-configure.sh), it is sourced and
 # supplies KERNEL/DTB/TRUSTCACHE/TICKET/SEPFW/SEPROM/RAMDISK automatically.
@@ -44,8 +51,24 @@ done
 INITRD=""
 [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ] && INITRD="-initrd $RAMDISK"
 
+# --- Accel selection ----------------------------------------------------------
+# Probe host KVM for logging. Force TCG for t8030 regardless (see header).
+ACCEL="tcg"
+ACCEL_WHY="Inferno t8030 machine uses Apple A13 CPUs + 16KiB pages (TCG-only); -accel kvm / -cpu host are not usable for this guest"
+if [ -e /dev/kvm ]; then
+  if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    echo "[*] /dev/kvm present and accessible — useful for OTHER aarch64 guests (virt), NOT for t8030"
+  else
+    echo "[*] /dev/kvm exists but is not r/w (chmod/ownership?); irrelevant for t8030 anyway"
+  fi
+else
+  echo "[*] /dev/kvm missing (need custom kernel with CONFIG_KVM host mode) — irrelevant for t8030"
+fi
+echo "[*] accel=$ACCEL  reason: $ACCEL_WHY"
+
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" \
+  -accel "$ACCEL" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 serial=3 wdt=-1 -vm_compressor_wk_sw" \

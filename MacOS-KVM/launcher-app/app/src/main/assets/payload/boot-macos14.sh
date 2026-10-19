@@ -36,7 +36,8 @@ command -v qemu-system-x86_64 >/dev/null || {
   exit 1
 }
 
-echo "[*] Booting macOS 14 under TCG (NO KVM — guest x86_64 on host aarch64)"
+echo "[*] accel=tcg  reason: macOS guest is x86_64; KVM on this ARM64 host cannot accelerate cross-arch guests (no -enable-kvm)"
+echo "[*] Booting macOS 14 under TCG (guest x86_64 on host aarch64)"
 echo "    RAM=${ALLOCATED_RAM}MiB  CPU=${CPU_MODEL} ${CPU_THREADS}t/${CPU_CORES}c"
 echo "    Display: $DISPLAY_QEMU"
 echo "    VNC default = 127.0.0.1:5900  (connect from a VNC app on the phone)"

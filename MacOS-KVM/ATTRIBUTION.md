@@ -23,3 +23,9 @@ legally entitled to use macOS (typically by owning a Mac).
 - QEMU: https://www.qemu.org/ (GPL)
 - OpenCore / Acidanthera: https://github.com/acidanthera/OpenCorePkg
 - OVMF (EDK II): https://github.com/tianocore/edk2
+
+## xz-arm64 (Android rootfs extract)
+
+Static aarch64 `xz` bundled for unpacking Debian `rootfs.tar.xz` on Android
+(toybox tar has no xz): [Moe-sushi/xz-static](https://github.com/Moe-sushi/xz-static)
+(license: see `LICENSE-xz` next to the binary in the module payload).

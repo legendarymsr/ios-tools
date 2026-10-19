@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.0.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.1.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -15,6 +15,14 @@ installs the **iOS Emu (t8030)** launcher app.
 - The guest CPU is an **Apple A13**, so there is **no KVM** — it's pure **TCG
   emulation**: very slow (multi-minute boots), **no GPU** acceleration, software
   rendering only. This is bring-up/research quality, not a daily driver.
+  Inferno `@ cc4302a` hardcodes `TYPE_APPLE_A13` and `minimum_page_bits=14`
+  (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
+  `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
+  `-accel tcg`.
+- **v1.1.1 chroot fix:** Debian rootfs now comes from linuxcontainers.org
+  (multi-MB `rootfs.tar.xz`); a static `xz-arm64` is bundled because Android
+  toybox `tar` cannot decompress xz. Failed/partial downloads are removed so
+  re-running works.
 - **IPSW auto-download.** On first "Download & Configure" the app pulls the
   Inferno reference IPSW **directly from Apple's CDN** onto your phone
   (~5.5 GB). Nothing from Apple is shipped in this repo or the module zip.
@@ -29,7 +37,7 @@ installs the **iOS Emu (t8030)** launcher app.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.1.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

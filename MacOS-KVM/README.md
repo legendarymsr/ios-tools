@@ -8,9 +8,17 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.0.0.zip`**
+- Module zip: **`macos-kvm-launcher-v1.0.1.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.1
+
+- Fixed Debian chroot bootstrap on Android (linuxcontainers.org rootfs + bundled
+  `xz-arm64`; size/type checks; cleanup on failure). Re-run chroot setup if a
+  prior attempt failed.
+- Boot script already uses `-accel tcg` (macOS is x86_64 on ARM64 host — KVM
+  cannot accelerate cross-arch guests) and logs that clearly.
 
 ## The honest part (read this first)
 
@@ -47,7 +55,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.0.0.zip`, reboot.
+   `macos-kvm-launcher-v1.0.1.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)

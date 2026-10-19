@@ -1,38 +1,38 @@
+
 # Build output
-build/
-*/build/
-
 # Gradle
-.gradle/
-gradle-app.setting
-
-# Local config / SDK pointers
-local.properties
-android-sdk/
-android-ndk/
-
 # IDE
-.idea/
-*.iml
-
-# OS
-.DS_Store
-
-# QEMU launcher app build output
-QEMU/*/launcher-app/app/build/
-QEMU/*/launcher-app/build/
-QEMU/*/launcher-app/.gradle/
-QEMU/*/launcher-app/local.properties
-
+# Local config / SDK pointers
 # MacOS-KVM launcher app build output
+# Never commit Apple images / giant VM disks
+# OS
+# QEMU launcher app build output
+# local android builds
+**/launcher-app/.gradle/
+**/launcher-app/.idea/
+**/launcher-app/app/build/
+**/launcher-app/local.properties
+*.dmg
+*.iml
+*.ipsw
+*/build/
+.DS_Store
+.gradle/
+.idea/
+BaseSystem.*
+MacOS-KVM/launcher-app/.gradle/
 MacOS-KVM/launcher-app/app/build/
 MacOS-KVM/launcher-app/build/
-MacOS-KVM/launcher-app/.gradle/
 MacOS-KVM/launcher-app/local.properties
-
-# Never commit Apple images / giant VM disks
-*.dmg
-*.ipsw
-BaseSystem.*
-mac_hdd_ng.img
+QEMU/*/launcher-app/.gradle/
+QEMU/*/launcher-app/app/build/
+QEMU/*/launcher-app/build/
+QEMU/*/launcher-app/local.properties
+_shared/setup-debian-chroot-BODY.sh
+android-ndk/
+android-sdk/
+build/
 com.apple.recovery.boot/
+gradle-app.setting
+local.properties
+mac_hdd_ng.img
