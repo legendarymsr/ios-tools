@@ -170,6 +170,7 @@ echo "[*] boot-args: $BOOTARGS"
 # 6 application cores + SEP; v1.2.1 and older passed 6 (only 5 AP cores).
 echo "[*] -smp ${SMP:-7} (= $(( ${SMP:-7} - 1 )) A13 cores + 1 SEP core)"
 
+echo "[*] machine: t8030,trustcache=$TRUSTCACHE,ticket=$TICKET,sep-fw=$SEPFW,sep-rom=$SEPROM,kaslr-off=true$USBOPT"
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" -L "$QDATA" \
   -accel "$ACCEL" \

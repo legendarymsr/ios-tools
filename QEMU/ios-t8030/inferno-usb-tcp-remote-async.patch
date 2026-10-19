@@ -1,5 +1,5 @@
 diff --git a/hw/usb/dev-tcp-remote.c b/hw/usb/dev-tcp-remote.c
-index 5639ab6..13211b1 100644
+index 5639ab6..f57178c 100644
 --- a/hw/usb/dev-tcp-remote.c
 +++ b/hw/usb/dev-tcp-remote.c
 @@ -22,37 +22,40 @@
@@ -55,7 +55,7 @@ index 5639ab6..13211b1 100644
              return p;
          }
      }
-@@ -60,111 +63,190 @@ usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
+@@ -60,111 +63,191 @@ usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
      return NULL;
  }
  
@@ -190,6 +190,7 @@ index 5639ab6..13211b1 100644
 +
 +    s->ioc  = NULL;
      s->addr = 0;
++    info_report("usb-tcp-remote: the iPhone disconnected");
  
 -    usb_tcp_remote_clean_completed_queue(s);
 +    qio_channel_shutdown(ioc, QIO_CHANNEL_SHUTDOWN_BOTH, NULL);
@@ -308,7 +309,7 @@ index 5639ab6..13211b1 100644
  
      s->closed = true;
      smp_wmb();
-@@ -175,237 +257,260 @@ static void usb_tcp_remote_closed(USBTCPRemoteState *s)
+@@ -175,237 +258,261 @@ static void usb_tcp_remote_closed(USBTCPRemoteState *s)
      qemu_bh_schedule(s->cleanup_bh);
  }
  
@@ -711,6 +712,7 @@ index 5639ab6..13211b1 100644
 -            qemu_cond_wait(&s->cond, &s->thr_mutex);
 -        }
 +    DPRINTF("%s: USB device accepted!\n", __func__);
++    info_report("usb-tcp-remote: the iPhone connected");
  
 -        qemu_mutex_unlock(&s->thr_mutex);
 +    usb_device_attach(USB_DEVICE(s), &err);
@@ -744,7 +746,7 @@ index 5639ab6..13211b1 100644
  
      if (s->conn_port != 0) {
          error_setg(errp, "Port specified for UNIX socket, this option is for "
-@@ -415,14 +520,12 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+@@ -415,14 +522,12 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
  
      if (s->conn_addr == NULL) {
          s->conn_addr = g_strdup(USB_TCP_REMOTE_UNIX_DEFAULT);
@@ -761,7 +763,7 @@ index 5639ab6..13211b1 100644
              return;
          }
      }
-@@ -445,21 +548,19 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+@@ -445,21 +550,19 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
      }
      strncpy(addr.sun_path, s->conn_addr, sizeof(addr.sun_path));
  
@@ -788,7 +790,7 @@ index 5639ab6..13211b1 100644
  
      if (s->conn_port == 0) {
          error_setg(errp, "Port must be specified.");
-@@ -467,14 +568,14 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+@@ -467,14 +570,14 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
      }
  
      addr.sin_family = AF_INET;
@@ -807,7 +809,7 @@ index 5639ab6..13211b1 100644
              error_setg_errno(errp, errno, "inet_pton failed");
              return;
          }
-@@ -486,20 +587,18 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+@@ -486,20 +589,18 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
          error_setg_errno(errp, errno, "Cannot open socket");
          return;
      }
@@ -833,7 +835,7 @@ index 5639ab6..13211b1 100644
  
      if (s->conn_port == 0) {
          error_setg(errp, "Port must be specified.");
-@@ -507,14 +606,14 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+@@ -507,14 +608,14 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
      }
  
      addr.sin6_family = AF_INET6;
@@ -852,7 +854,7 @@ index 5639ab6..13211b1 100644
              error_setg_errno(errp, errno, "inet_pton failed");
              return;
          }
-@@ -526,302 +625,215 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+@@ -526,302 +627,215 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
          error_setg_errno(errp, errno, "Cannot open socket");
          return;
      }
@@ -1263,7 +1265,7 @@ index 5639ab6..13211b1 100644
  
      dc->desc = "QEMU USB Passthrough Device";
      set_bit(DEVICE_CATEGORY_USB, dc->categories);
-@@ -829,15 +841,12 @@ static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
+@@ -829,15 +843,12 @@ static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
  }
  
  static const TypeInfo usb_tcp_remote_dev_type_info = {

@@ -102,8 +102,8 @@ for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run ste
 [ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
 # v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-3' /root/Inferno/build/.ios-tools-patches; then
-  die "Inferno needs the v1.2.9 patches (USB-host rewrite + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-4' /root/Inferno/build/.ios-tools-patches; then
+  die "Inferno needs the v1.2.10 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
@@ -229,9 +229,48 @@ for raw in sys.stdin:
 # socket? Inferno's iOS side connects when iOS turns its USB controller on
 # (DCTL run/stop), so after the USB-host VM is restarted it reconnects the
 # next time iOS brings USB up (e.g. after the ramdisk reboots).
+# /proc/net/unix: "Num RefCount Protocol Flags Type St Inode Path"; the
+# listener has St 01 (unconnected), the socket accepted for the iPhone has St
+# 03 (connected) and the same path.
 usb_link() {
-  local n; n=$(awk -v p="$USB_SOCK" '$NF == p' /proc/net/unix 2>/dev/null | wc -l)
-  if [ "$n" -ge 2 ]; then echo "connected"; elif [ "$n" -ge 1 ]; then echo "not yet"; else echo "no socket"; fi
+  local l c
+  l=$(awk -v p="$USB_SOCK" '$NF == p && $6 == "01"' /proc/net/unix 2>/dev/null | wc -l)
+  c=$(awk -v p="$USB_SOCK" '$NF == p && $6 == "03"' /proc/net/unix 2>/dev/null | wc -l)
+  if [ "$c" -ge 1 ]; then echo "connected"
+  elif [ "$l" -ge 1 ]; then echo "not yet"
+  else echo "no listener at $USB_SOCK"; fi
+}
+# Both QEMUs must see the same socket file: same mount namespace and root.
+check_usb_socket() {
+  local cp me_ns cp_ns me_root cp_root
+  [ -S "$USB_SOCK" ] || die "the USB-host VM's socket $USB_SOCK does not exist"
+  awk -v p="$USB_SOCK" '$NF == p && $6 == "01"' /proc/net/unix | grep -q . \
+    || die "nothing listens on $USB_SOCK (USB-host VM not ready)"
+  cp=$(cat "$DATA/companion/qemu.pid" 2>/dev/null || true)
+  if [ -n "$cp" ] && [ -e "/proc/$cp" ]; then
+    me_ns=$(readlink /proc/self/ns/mnt); cp_ns=$(readlink "/proc/$cp/ns/mnt")
+    me_root=$(readlink /proc/self/root); cp_root=$(readlink "/proc/$cp/root")
+    log "USB socket $USB_SOCK: listening; mount ns $me_ns (USB-host VM $cp_ns), root $me_root (USB-host VM $cp_root)"
+    [ "$me_ns" = "$cp_ns" ] && [ "$me_root" = "$cp_root" ] \
+      || die "the USB-host VM runs in a different mount namespace/root than the iOS VM, so the iOS VM cannot see $USB_SOCK"
+  fi
+}
+# Print new USB link messages from both QEMUs on screen as they appear.
+USBMSG_I=0; USBMSG_C=0
+show_usb_msgs() {
+  local n
+  n=$(wc -l < "$R/inferno.log" 2>/dev/null || echo 0)
+  [ "$n" -lt "$USBMSG_I" ] && USBMSG_I=0
+  if [ "$n" -gt "$USBMSG_I" ]; then
+    sed -n "$((USBMSG_I + 1)),${n}p" "$R/inferno.log" | grep -E 'usb-tcp-host|usb_tcp_host|Cannot connect|Socket path|Port specified|usb-conn' | cut -c1-200 | sed 's/^/[iOS QEMU] /'
+    USBMSG_I=$n
+  fi
+  n=$(wc -l < "$DATA/companion/qemu.log" 2>/dev/null || echo 0)
+  [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
+  if [ "$n" -gt "$USBMSG_C" ]; then
+    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote: the iPhone' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
+    USBMSG_C=$n
+  fi
 }
 has_panic() { tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'panic\(cpu|SEP Panic|SEP ROM boot panic'; }
 # panic_line: the one line that names the cause
@@ -308,8 +347,9 @@ restart_companion() {
   # If that already happened, iOS will never see the new USB-host VM and
   # restored gives up after its 120 s "waiting for host" window - reboot the
   # iOS VM right away instead of waiting (nothing is written to disk yet).
-  if [ "${WAS_LINKED:-0}" = 1 ] || tr -d '\r' < "$R/ios-serial.log" 2>/dev/null \
-       | grep -qE 'enable_usb|waiting for host to trigger'; then
+  # The patched iOS side reconnects by itself within ~2 s; only restored's
+  # 120 s "waiting for host" window may already be lost.
+  if tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'waiting for host to trigger'; then
     if [ -n "$IOS_PID" ] && kill -0 "$IOS_PID" 2>/dev/null; then
       warn "iOS had already brought USB up - rebooting the iOS VM so it connects to the new USB-host VM"
       stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
@@ -318,7 +358,7 @@ restart_companion() {
     fi
     COMP_RESTART_T=0
   else
-    log "iOS has not brought USB up yet; it will connect to the new USB-host VM by itself"
+    log "the iOS QEMU reconnects to the new USB-host VM by itself (it retries every 2 s)"
   fi
   WAS_LINKED=0
 }
@@ -330,6 +370,8 @@ stage1_once() {
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
   log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
   : > "$R/inferno.log"
+  USBMSG_I=0; USBMSG_C=0; WFH_T=0; WFH_SAID=0
+  check_usb_socket
   start_ios
   log "waiting for the restore ramdisk to show up over USB (TCG on a phone: often 20-90 min)"
   local t0 next el udid=""
@@ -349,20 +391,36 @@ stage1_once() {
       start_ios
     fi
     companion_up || restart_companion
-    if grep -qE 'Cannot connect to server|Socket path too long|Port specified for UNIX socket' "$R/inferno.log" 2>/dev/null; then
-      grep -E 'Cannot connect|Socket path|Port specified' "$R/inferno.log" | tail -n 3
-      warn "the iOS VM could not connect its USB port - rebooting it"
-      sed -i 's/Cannot connect to server/(seen) cannot connect/' "$R/inferno.log"
-      stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
-      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM could not connect to the USB-host VM ($USB_SOCK)"
-      start_ios
+    show_usb_msgs
+    # The patched iOS side retries a failed connect every 2 s by itself;
+    # only a wrong socket setting is fatal.
+    if grep -qE 'Socket path too long|Port specified for UNIX socket' "$R/inferno.log" 2>/dev/null; then
+      die "the iOS VM rejects its USB socket setting: $(grep -E 'Socket path|Port specified' "$R/inferno.log" | tail -n1)"
+    fi
+    # restored waits 120 s for the host. If it got there without a link,
+    # say on screen which side is missing.
+    if [ "$WFH_T" = 0 ] && tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -q 'waiting for host to trigger start of restore'; then
+      WFH_T=$(date +%s)
+    fi
+    if [ "$WFH_T" -gt 0 ] && [ "$WFH_SAID" = 0 ] && [ $(( $(date +%s) - WFH_T )) -ge 30 ] && [ "$(usb_link)" != connected ]; then
+      WFH_SAID=1
+      warn "iOS is waiting for the host but the USB link is '$(usb_link)':"
+      if grep -q 'usb-tcp-host: connected' "$R/inferno.log"; then
+        warn "  the iOS QEMU says it connected - the USB-host VM did not accept it (see [USB-host QEMU] lines)"
+      elif grep -q 'usb-tcp-host: iOS turned USB on' "$R/inferno.log"; then
+        warn "  the iOS QEMU is trying to connect: $(grep 'usb-tcp-host:' "$R/inferno.log" | tail -n1 | cut -c1-160)"
+      else
+        warn "  the iOS QEMU never started its USB link (no 'usb-tcp-host:' line): iOS did not turn the emulated USB controller on"
+      fi
+      warn "  socket: $(awk -v p="$USB_SOCK" '$NF == p {print "St=" $6}' /proc/net/unix | tr '\n' ' ')"
     fi
     # After a USB-host VM restart, iOS has to bring USB up again to reconnect.
     # Give it RECONNECT_WAIT seconds, then reboot the iOS VM (nothing has been
     # written to its disks before idevicerestore starts).
     if [ "$COMP_RESTART_T" -gt 0 ] && [ "$(usb_link)" != connected ] \
-       && [ $(( $(date +%s) - COMP_RESTART_T )) -gt "${RECONNECT_WAIT:-900}" ]; then
-      warn "iOS did not reconnect to the restarted USB-host VM within ${RECONNECT_WAIT:-900} s - rebooting the iOS VM"
+       && grep -q 'usb-tcp-host: iOS turned USB on' "$R/inferno.log" 2>/dev/null \
+       && [ $(( $(date +%s) - COMP_RESTART_T )) -gt "${RECONNECT_WAIT:-180}" ]; then
+      warn "iOS did not reconnect to the restarted USB-host VM within ${RECONNECT_WAIT:-180} s - rebooting the iOS VM"
       stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
       [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB-host VM"
       start_ios; COMP_RESTART_T=0

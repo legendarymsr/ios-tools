@@ -171,17 +171,25 @@ fi
 # a stale "already handled" DART interrupt under MTTCG (one cause of the
 # "t8020dart invalid lock state" panic). Again one file + relink.
 HERE=$(cd "$(dirname "$0")" && pwd)
-PATCH_ID="ios-tools-patches-3"
-# v1.2.9 replaces the v1.2.7 usb-tcp-remote fix with Inferno dev's async
-# rewrite of the device (7900ece "dev-tcp-remote: make async", companion side
-# only, same wire protocol) plus fixes for its remaining crash paths. Undo the
-# old patch first if this tree has it.
-old="$HERE/inferno-usb-tcp-remote-fix.patch"
-if [ -f "$old" ] && git -C "$SRC" apply --reverse --check "$old" >/dev/null 2>&1; then
-  git -C "$SRC" apply --reverse "$old" || die "could not undo the old inferno-usb-tcp-remote-fix.patch"
-  log "patch inferno-usb-tcp-remote-fix.patch: removed (superseded)"
-fi
-for p in inferno-usb-tcp-remote-async.patch inferno-dart-error-lock.patch; do
+PATCH_ID="ios-tools-patches-4"
+# Superseded patches from earlier versions are undone first:
+#   v1.2.7 inferno-usb-tcp-remote-fix.patch, v1.2.9 inferno-usb-tcp-remote-async-v129.patch
+# Current set:
+#   inferno-usb-tcp-remote-async.patch  USB-host side: Inferno dev's async
+#       rewrite (7900ece) + crash fixes + "iPhone connected/disconnected" log
+#   inferno-usb-tcp-host-retry.patch    iOS side: keep retrying the connect
+#       every 2 s while iOS has USB on (cc4302a tried once, when iOS enabled
+#       USB, and never again; also reconnects after a USB-host VM restart) and
+#       log every step ("usb-tcp-host: ...") in inferno.log
+#   inferno-dart-error-lock.patch       SEP DART error clear under the lock
+for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch; do
+  of="$HERE/$old"
+  if [ -f "$of" ] && git -C "$SRC" apply --reverse --check "$of" >/dev/null 2>&1; then
+    git -C "$SRC" apply --reverse "$of" || die "could not undo the old $old"
+    log "patch $old: removed (superseded)"
+  fi
+done
+for p in inferno-usb-tcp-remote-async.patch inferno-usb-tcp-host-retry.patch inferno-dart-error-lock.patch; do
   pf="$HERE/$p"
   [ -f "$pf" ] || die "$p missing next to $0 (copy the whole payload)"
   if git -C "$SRC" apply --reverse --check "$pf" >/dev/null 2>&1; then

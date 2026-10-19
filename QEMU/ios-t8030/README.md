@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.9.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.10.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,24 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.10 iOS side of the USB link:**
+  - **How Inferno cc4302a connects (`hw/usb/hcd-tcp.c`):**
+    - The iOS QEMU connects to the USB-host socket only in `usb_tcp_host_attach`. That runs when iOS sets DCTL RUN_STOP on the emulated DWC3 (`hcd-dwc3.c`), i.e. when the restore ramdisk enables USB. Nothing connects at machine init.
+    - If `connect()` fails, it logs one "Cannot connect to server" line and never tries again until iOS turns USB off and on.
+    - When the link drops (e.g. a USB-host VM restart), it never reconnects.
+    - It also returns silently if the port has no attached device.
+    - The `t8030` machine options are `usb-conn-type=unix|ipv4|ipv6` (no `unix:` prefix), `usb-conn-addr=<path>` and `usb-conn-port`. They are aliased through `atc` → OTG → `usb-tcp-host`. The ChefKiss guide's command passes none of them and uses the default socket path. Step 5 passes `usb-conn-type=unix,usb-conn-addr=/root/InfernoData/restore/usb.sock`, the same absolute path the USB-host VM binds. Both QEMUs are started by the same step-5 worker, so they share one mount namespace.
+  - **New `inferno-usb-tcp-host-retry.patch` (iOS side, step 3):**
+    - While iOS has USB on, a failed connect is retried every 2 s, and a dropped link reconnects by itself, so a restarted USB-host VM no longer needs an iOS reboot.
+    - Every step is logged as `usb-tcp-host: …` (USB on / connect attempts / connected / closed).
+    - The USB-host side logs `usb-tcp-remote: the iPhone connected/disconnected`.
+  - **Step 5:**
+    - Before booting iOS, it checks that the socket exists, has a listener, and that both QEMUs share the same mount namespace and root (these are printed).
+    - Those USB messages from both QEMUs appear on screen as they happen.
+    - The link check now reads the socket state in `/proc/net/unix` (listener `St 01`, accepted connection `St 03`).
+    - If iOS reaches "waiting for host" without a link for 30 s, it says which side is missing: iOS never turned USB on, iOS is still trying, or iOS connected but the USB-host VM did not accept.
+    - `run-t8030.sh` logs the full `-M t8030,…` line.
+  - **Re-run step 3:** it recompiles `hw/usb/hcd-tcp.c` and `hw/usb/dev-tcp-remote.c` and relinks, about 5-10 min. Then run step 5.
 - **v1.2.9 USB-host VM: Inferno's async usb-tcp-remote + crash fixes:**
   - **Why it still died:** in cc4302a the USB-host side of the virtual cable (`hw/usb/dev-tcp-remote.c`) runs a reader thread next to the QEMU main loop and busy-waits, with the global lock dropped, for every USB transfer. That leaves several ways to abort or crash under a slow, racy link:
     - responses parked in the completion queue for packets that EHCI had already cancelled and freed (use-after-free: "usb packet state check failed" or SIGSEGV);
@@ -237,7 +255,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.9.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.10.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
