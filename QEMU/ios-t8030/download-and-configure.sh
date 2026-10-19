@@ -61,41 +61,90 @@ if [ -n "${avail_kb:-}" ] && [ "$avail_kb" -lt 9000000 ]; then
   warn "Low free space (~$((avail_kb/1024)) MB). IPSW alone is ~5.1 GiB; recommend ≥10 GiB free."
 fi
 
-# ---------- download helper (resume) ----------
+# ---------- download helper (resume, size-aware) ----------
+remote_size() {
+  # Content-Length of the final (post-redirect) response, empty if unknown
+  curl -sIL -A "$UA" "$1" 2>/dev/null | tr -d '\r' \
+    | awk 'tolower($1)=="content-length:"{n=$2} END{print n}'
+}
+remote_ranges() {
+  curl -sIL -A "$UA" "$1" 2>/dev/null | tr -d '\r' \
+    | awk 'tolower($1)=="accept-ranges:"{r=tolower($2)} END{print r}'
+}
+fsize() { [ -f "$1" ] && wc -c < "$1" | tr -d ' ' || echo 0; }
+
 fetch() {
   # fetch URL DEST [expected_size]
-  local url="$1" dest="$2" expect="${3:-}"
-  if [ -f "$dest" ] && [ -n "$expect" ]; then
-    local have
-    have=$(wc -c < "$dest" | tr -d ' ')
-    if [ "$have" = "$expect" ]; then
-      log "already have $dest ($have bytes)"
+  local url="$1" dest="$2" expect="${3:-}" rsize ranges have attempt
+  rsize=$(remote_size "$url")
+  if [ -n "$rsize" ] && [ "$rsize" != "0" ]; then
+    if [ -n "$expect" ] && [ "$rsize" != "$expect" ]; then
+      warn "server size $rsize differs from expected $expect; trusting server"
+    fi
+    expect="$rsize"
+  fi
+  ranges=$(remote_ranges "$url")
+  for attempt in 1 2; do
+    have=$(fsize "$dest")
+    if [ -n "$expect" ] && [ "$have" = "$expect" ]; then
+      log "already have $dest ($have bytes), skipping download"
       return 0
     fi
-    log "incomplete $dest ($have / $expect) — resuming"
-  fi
-  log "downloading $url"
-  log "         -> $dest"
-  # curl: resume, follow redirects, show a progress bar that the app log can stream
-  curl -L --fail --retry 5 --retry-delay 3 -C - \
-    -A "$UA" \
-    --progress-bar \
-    -o "$dest" \
-    "$url" || die "download failed: $url"
-  if [ -n "$expect" ]; then
-    local have
-    have=$(wc -c < "$dest" | tr -d ' ')
-    [ "$have" = "$expect" ] || die "size mismatch for $dest: got $have, expected $expect"
-    log "verified size $have"
-  fi
+    if [ -n "$expect" ] && [ "$have" -gt "$expect" ]; then
+      warn "$dest is larger than the server file ($have > $expect), deleting"
+      rm -f "$dest"; have=0
+    fi
+    if [ "$have" -gt 0 ] && [ "$ranges" != "bytes" ]; then
+      warn "server does not advertise byte ranges, restarting from zero"
+      rm -f "$dest"; have=0
+    fi
+    log "downloading $url"
+    log "         -> $dest ($have / ${expect:-?} bytes present)"
+    local resume=()
+    [ "$have" -gt 0 ] && resume=(-C -)
+    # no --retry here: curl's retry with -C - can re-request past EOF (416)
+    if curl -L --fail -A "$UA" --progress-bar "${resume[@]}" -o "$dest" "$url"; then
+      have=$(fsize "$dest")
+      if [ -z "$expect" ] || [ "$have" = "$expect" ]; then
+        log "verified size $have"
+        return 0
+      fi
+      warn "size mismatch: got $have, expected $expect"
+    else
+      local rc=$?
+      have=$(fsize "$dest")
+      if [ -n "$expect" ] && [ "$have" = "$expect" ]; then
+        log "curl exited $rc but file is complete ($have bytes)"
+        return 0
+      fi
+      warn "curl exited $rc with $have bytes"
+      # 22 = HTTP error (e.g. 416): partial file is unusable for resume
+      [ "$rc" = "22" ] && rm -f "$dest"
+    fi
+    [ "$attempt" = 1 ] && { [ -n "$expect" ] && [ "$(fsize "$dest")" -gt "$expect" ] && rm -f "$dest"; log "retrying once"; }
+  done
+  die "download failed: $url"
+}
+
+ipsw_ok() {
+  # IPSW is a zip: check the central directory and that BuildManifest.plist is listed
+  unzip -l "$1" 2>/dev/null | grep -q 'BuildManifest.plist'
 }
 
 # ---------- 1. IPSW from Apple ----------
 IPSW="$DATA/$IPSW_NAME"
 if [ "${SKIP_IPSW_DOWNLOAD:-0}" != "1" ]; then
   fetch "$IPSW_URL" "$IPSW" "$IPSW_SIZE"
+  if ! ipsw_ok "$IPSW"; then
+    warn "IPSW zip directory is unreadable (corrupt download), redownloading once"
+    rm -f "$IPSW"
+    fetch "$IPSW_URL" "$IPSW" "$IPSW_SIZE"
+    ipsw_ok "$IPSW" || die "IPSW still corrupt after redownload: $IPSW"
+  fi
+  log "IPSW zip structure OK"
 else
   [ -f "$IPSW" ] || die "SKIP_IPSW_DOWNLOAD set but $IPSW missing"
+  ipsw_ok "$IPSW" || die "IPSW at $IPSW is not a valid zip"
 fi
 
 # ---------- 2. backing disks + extract (via prepare-ios-files.sh if present) ----------
