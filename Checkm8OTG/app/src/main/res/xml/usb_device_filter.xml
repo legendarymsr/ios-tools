@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Apple DFU mode -->
+    <usb-device vendor-id="1452" product-id="4647" />
+    <!-- Apple Recovery mode (info only; checkm8 needs DFU) -->
+    <usb-device vendor-id="1452" product-id="4737" />
+</resources>

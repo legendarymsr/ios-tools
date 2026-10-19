@@ -1,0 +1,19 @@
+# Build output
+build/
+*/build/
+
+# Gradle
+.gradle/
+gradle-app.setting
+
+# Local config / SDK pointers
+local.properties
+android-sdk/
+android-ndk/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store

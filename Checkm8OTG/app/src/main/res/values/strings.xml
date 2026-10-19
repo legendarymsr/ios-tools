@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Checkm8 OTG</string>
+    <string name="instructions">1. Put the iPhone in DFU (screen black).\n2. Connect via USB-C OTG / USB host.\n3. Grant root (KernelSU or Magisk).\n4. Tap Exploit for pwned DFU only, or Jailbreak for full palera1n.\n\ncheckm8 (gaster): A5–A11 / T2.\npalera1n jailbreak: A8–A11 / T2, iOS/iPadOS/tvOS 15–26 (rootless default). A11: disable passcode; on iOS 16 reset first. A12+ will not work.</string>
+    <string name="btn_exploit">Exploit (gaster pwn)</string>
+    <string name="btn_reset">Reset USB / gaster reset</string>
+    <string name="btn_jailbreak">Jailbreak (palera1n)</string>
+    <string name="mode_label">Jailbreak mode</string>
+    <string name="mode_rootless">Rootless (-l) — default, iOS 15+</string>
+    <string name="mode_rootful">Rootful / fakefs (-f) — creates fakefs</string>
+    <string name="status_idle">Idle — waiting for DFU device</string>
+</resources>
