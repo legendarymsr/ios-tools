@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">QEMU KVM</string>
+    <string name="instructions">Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware KVM.\nNeeds a CUSTOM KERNEL (CONFIG_KVM=y) that exposes /dev/kvm; Samsung stock disables it.\nFlow: Check KVM → set up Debian chroot → install QEMU → run a guest.\nGUI guests use a VNC server (connect with a VNC viewer on the phone).</string>
+</resources>

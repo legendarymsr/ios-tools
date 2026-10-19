@@ -17,3 +17,9 @@ android-ndk/
 
 # OS
 .DS_Store
+
+# QEMU launcher app build output
+QEMU/*/launcher-app/app/build/
+QEMU/*/launcher-app/build/
+QEMU/*/launcher-app/.gradle/
+QEMU/*/launcher-app/local.properties
