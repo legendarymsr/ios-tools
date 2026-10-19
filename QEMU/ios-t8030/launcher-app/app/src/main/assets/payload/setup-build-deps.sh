@@ -9,12 +9,13 @@ apt-get update
 apt-get install -y \
   git build-essential libtool meson ninja-build pkg-config \
   device-tree-compiler libglib2.0-dev gnutls-bin \
-  libjpeg-turbo8-dev libpng-dev libslirp-dev libssh-dev \
+  libjpeg62-turbo-dev libpng-dev libslirp-dev libssh-dev \
   libusb-1.0-0-dev liblzo2-dev libncurses5-dev libncurses-dev \
   libpixman-1-dev libsnappy-dev vde2 zstd libzstd-dev \
   libgnutls28-dev libgmp10 libgmp3-dev libgtk-3-dev libsdl2-dev \
   python3 python3-pip python3-venv curl ca-certificates unzip wget \
-  liblzfse-dev lzfse || true
+  liblzfse-dev lzfse xz-utils \
+  || { echo "[ERROR] apt-get install failed - see the package error above" >&2; exit 1; }
 
 # Debian bookworm ships nettle 3.8; Inferno needs >= 3.10. Build it if too old.
 NETTLE_VER="$(pkg-config --modversion nettle 2>/dev/null || echo 0)"

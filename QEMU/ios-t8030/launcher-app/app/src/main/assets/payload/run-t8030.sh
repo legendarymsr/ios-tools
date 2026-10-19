@@ -66,12 +66,25 @@ else
 fi
 echo "[*] accel=$ACCEL  reason: $ACCEL_WHY"
 
+# --- Jailbreak boot-args ------------------------------------------------------
+# Inferno patches AMFI / code signing in the kernel on every boot already, so no
+# amfi=... boot-arg is needed. Once jailbreak-prep.sh has installed the
+# bootstrap and edited launchd.plist, launchd must accept the modified service
+# cache: that needs launchd_unsecure_cache=1 (ChefKiss jailbreak-bootstrap page).
+BOOTARGS="tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 serial=3 wdt=-1 -vm_compressor_wk_sw"
+if [ -f "$DATA/JAILBREAK_APPLIED" ] || [ "${JAILBREAK:-0}" = "1" ]; then
+  BOOTARGS="$BOOTARGS launchd_unsecure_cache=1"
+  echo "[*] jailbreak bootstrap applied: adding launchd_unsecure_cache=1 (root bash on the serial console)"
+fi
+[ -n "${EXTRA_BOOTARGS:-}" ] && BOOTARGS="$BOOTARGS $EXTRA_BOOTARGS"
+echo "[*] boot-args: $BOOTARGS"
+
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" \
   -accel "$ACCEL" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true \
   -kernel "$KERNEL" -dtb "$DTB" \
-  -append "tlto_us=-1 mtxspin=-1 agm-genuine=1 agm-authentic=1 agm-trusted=1 serial=3 wdt=-1 -vm_compressor_wk_sw" \
+  -append "$BOOTARGS" \
   -smp 6 -m 4G -serial mon:stdio \
   ${DISPLAY_QEMU:--display vnc=127.0.0.1:0,show-cursor=on} \
   $INITRD \

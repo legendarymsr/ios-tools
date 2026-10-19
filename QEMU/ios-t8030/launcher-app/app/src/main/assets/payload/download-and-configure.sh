@@ -310,6 +310,33 @@ A full restore still needs the companion VM + idevicerestore (upstream guide).
 First boot without a prior restore may not reach SpringBoard; that is expected.
 EOF
 
+# ---------- 9. jailbreak bootstrap (stage + apply when possible) ----------
+JBPREP="$(dirname "$0")/jailbreak-prep.sh"
+if [ "${SKIP_JAILBREAK:-0}" = "1" ]; then
+  warn "SKIP_JAILBREAK=1 - not staging the jailbreak bootstrap"
+elif [ -f "$JBPREP" ]; then
+  log "staging jailbreak bootstrap (checkra1n strap + launchd patch) - see jailbreak-prep.sh"
+  DATA="$DATA" bash "$JBPREP" stage || warn "jailbreak staging hit an error (non-fatal); re-run: bash /root/jailbreak-prep.sh"
+  if [ -f "$DATA/JAILBREAK_APPLIED" ]; then
+    echo "jailbreak=applied $(cat "$DATA/JAILBREAK_APPLIED")" >> "$READY"
+  else
+    echo "jailbreak=staged (needs restored root disk + APFS write; see NEXT_STEPS.txt)" >> "$READY"
+  fi
+fi
+cat >> "$DATA/NEXT_STEPS.txt" <<EOF
+
+Jailbreak:
+  Inferno already patches AMFI / code signing in the kernel on every boot.
+  The userland bootstrap (bash, apt, ...) + root shell on the serial console is
+  staged in $DATA/jailbreak. It is written onto the iOS System volume AFTER the
+  guest has been restored (companion VM + idevicerestore):
+    - phone kernel with an APFS rw driver: re-run  bash /root/jailbreak-prep.sh
+    - otherwise on a Mac: sudo $DATA/jailbreak/apply-on-mac.sh /path/to/root
+      then copy root back and  touch $DATA/JAILBREAK_APPLIED
+  run-t8030.sh then adds launchd_unsecure_cache=1 automatically.
+  palera1n/checkra1n themselves cannot run in the emulator (no SecureROM/iBoot).
+EOF
+
 log "DONE. Status:"
 cat "$READY"
 echo

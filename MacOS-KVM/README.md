@@ -8,9 +8,23 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.0.1.zip`**
+- Module zip: **`macos-kvm-launcher-v1.0.2.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.2
+
+- Fixed `can't create /data/local/debian/etc/resolv.conf: No such file or
+  directory`. The Debian image ships `etc/resolv.conf` as an absolute symlink to
+  `/run/systemd/resolve/stub-resolv.conf`; writing through it from Android
+  followed the link onto the phone's own `/run`, which doesn't exist. The
+  symlink is now replaced with a real file.
+- Rootfs is extracted into `/data/local/debian.staging` and only moved into
+  place once `etc/os-release` and `usr/bin/sh` exist. xz and tar run as separate
+  steps, and their exit codes, the download size and the archive type are
+  logged. Any failure wipes the partial tree (stale bind mounts are unmounted
+  first) and exits non-zero. Re-running cleans up leftovers from earlier runs.
+  If your last attempt failed, just tap **Set up Debian chroot** again.
 
 ## v1.0.1
 
@@ -55,7 +69,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.0.1.zip`, reboot.
+   `macos-kvm-launcher-v1.0.2.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)

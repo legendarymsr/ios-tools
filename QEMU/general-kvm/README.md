@@ -4,9 +4,23 @@ Run ARM64 Linux and Windows-on-ARM guests under QEMU with hardware **KVM**
 acceleration on a rooted phone. Packaged as a KernelSU/Magisk module that
 installs the **QEMU KVM** launcher app.
 
-- Module zip: **`qemu-kvm-launcher-v1.0.1.zip`**
+- Module zip: **`qemu-kvm-launcher-v1.0.2.zip`**
 - App package: `com.qemukvm.launcher` (label "QEMU KVM")
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.0.2
+
+- Fixed `can't create /data/local/debian/etc/resolv.conf: No such file or
+  directory`. The Debian image ships `etc/resolv.conf` as an absolute symlink to
+  `/run/systemd/resolve/stub-resolv.conf`; writing through it from Android
+  followed the link onto the phone's own `/run`, which doesn't exist. The
+  symlink is now replaced with a real file.
+- Rootfs is extracted into `/data/local/debian.staging` and only moved into
+  place once `etc/os-release` and `usr/bin/sh` exist. xz and tar run as separate
+  steps, and their exit codes, the download size and the archive type are
+  logged. Any failure wipes the partial tree (stale bind mounts are unmounted
+  first) and exits non-zero. Re-running cleans up leftovers from earlier runs.
+  If your last attempt failed, just tap **Set up Debian chroot** again.
 
 ## v1.0.1
 
@@ -18,7 +32,7 @@ installs the **QEMU KVM** launcher app.
 ## Install
 
 1. Open the **KernelSU manager → Modules → Install from storage**, pick
-   `qemu-kvm-launcher-v1.0.1.zip`, reboot.
+   `qemu-kvm-launcher-v1.0.2.zip`, reboot.
 2. "QEMU KVM" appears in your app drawer. Open it and grant root.
 
 (Manual alternative: `adb install launcher-app/app/build/outputs/apk/debug/app-debug.apk`.)
