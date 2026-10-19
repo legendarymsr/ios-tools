@@ -209,4 +209,10 @@ done
 echo
 echo "[done] Built:"
 printf '  %s\n' "$SRC/build/qemu-system-aarch64" "$SRC/build/qemu-img"
+# The build tree is used without "make install"; make sure QEMU's keymaps
+# (needed by -display vnc) sit in a data dir the launch scripts pass with -L.
+if [ -d "$SRC/pc-bios/keymaps" ]; then
+  mkdir -p "$SRC/build/ios-tools-qemu-data" && cp -r "$SRC/pc-bios/keymaps" "$SRC/build/ios-tools-qemu-data/" \
+    && echo "[*] keymaps copied to $SRC/build/ios-tools-qemu-data" || echo "[!] could not copy keymaps (the launch scripts retry at runtime)"
+fi
 echo "Next: step 4 (Download & configure iOS)."

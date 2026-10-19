@@ -43,6 +43,28 @@ SEPROM="${SEPROM:-$DATA/AppleSEPROM-Cebu-B1}"
 RAMDISK="${RAMDISK:-}"   # set to the Erase/Upgrade RAM disk .dmg to restore
 
 [ -x "$QEMU" ] || { echo "qemu-system-aarch64 not found at $QEMU (build Inferno first)"; exit 1; }
+
+# QEMU data dir (keymaps for -display vnc, firmware ROMs). A build-tree
+# qemu-system-aarch64 that was never "make install"ed can't find
+# keymaps/en-us ("could not read keymap file: 'en-us'"), so locate one at
+# runtime and pass it with -L. Falls back to copying the keymaps that ship in
+# the Inferno source tree (pc-bios/keymaps) next to the build.
+qemu_datadir() {
+  local qd src d
+  qd=$(cd "$(dirname "$QEMU")" 2>/dev/null && pwd) || qd=""
+  src="${INFERNO_SRC:-$(dirname "$qd")}"
+  for d in "${QEMU_DATADIR:-}" "$qd/qemu-bundle/usr/local/share/qemu" "$qd/pc-bios" \
+           "$qd/ios-tools-qemu-data" /usr/local/share/qemu /usr/share/qemu "$src/pc-bios"; do
+    [ -n "$d" ] && [ -f "$d/keymaps/en-us" ] && { echo "$d"; return 0; }
+  done
+  if [ -f "$src/pc-bios/keymaps/en-us" ] && [ -n "$qd" ]; then
+    mkdir -p "$qd/ios-tools-qemu-data" && cp -r "$src/pc-bios/keymaps" "$qd/ios-tools-qemu-data/" \
+      && [ -f "$qd/ios-tools-qemu-data/keymaps/en-us" ] && { echo "$qd/ios-tools-qemu-data"; return 0; }
+  fi
+  return 1
+}
+QDATA=$(qemu_datadir) || { echo "[ERROR] no QEMU keymaps (keymaps/en-us) found next to $QEMU, in /usr/local/share/qemu or the Inferno source - re-run step 3"; exit 1; }
+echo "[*] QEMU data dir: $QDATA"
 missing=0
 for f in "$TICKET" "$SEPFW" "$SEPROM" "$KERNEL" "$DTB" "$TRUSTCACHE"; do
   if [ ! -f "$f" ]; then
@@ -135,7 +157,7 @@ fi
 echo "[*] boot-args: $BOOTARGS"
 
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
-exec "$QEMU" \
+exec "$QEMU" -L "$QDATA" \
   -accel "$ACCEL" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true$USBOPT \
   -kernel "$KERNEL" -dtb "$DTB" \

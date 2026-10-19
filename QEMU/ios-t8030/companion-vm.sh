@@ -32,6 +32,26 @@ CSMP="${COMPANION_SMP:-2}"
 GUEST_ROOT="${GUEST_ROOT:-/}"
 IDEVICE_ID="${IDEVICE_ID:-$PREFIX/bin/idevice_id}"
 
+# QEMU data dir (keymaps for -display vnc, firmware ROMs). A build-tree
+# qemu-system-aarch64 that was never "make install"ed can't find
+# keymaps/en-us ("could not read keymap file: 'en-us'"), so locate one at
+# runtime and pass it with -L. Falls back to copying the keymaps that ship in
+# the Inferno source tree (pc-bios/keymaps) next to the build.
+qemu_datadir() {
+  local qd src d
+  qd=$(cd "$(dirname "$QEMU")" 2>/dev/null && pwd) || qd=""
+  src="${INFERNO_SRC:-$(dirname "$qd")}"
+  for d in "${QEMU_DATADIR:-}" "$qd/qemu-bundle/usr/local/share/qemu" "$qd/pc-bios" \
+           "$qd/ios-tools-qemu-data" /usr/local/share/qemu /usr/share/qemu "$src/pc-bios"; do
+    [ -n "$d" ] && [ -f "$d/keymaps/en-us" ] && { echo "$d"; return 0; }
+  done
+  if [ -f "$src/pc-bios/keymaps/en-us" ] && [ -n "$qd" ]; then
+    mkdir -p "$qd/ios-tools-qemu-data" && cp -r "$src/pc-bios/keymaps" "$qd/ios-tools-qemu-data/" \
+      && [ -f "$qd/ios-tools-qemu-data/keymaps/en-us" ] && { echo "$qd/ios-tools-qemu-data"; return 0; }
+  fi
+  return 1
+}
+
 log()  { printf '[usbhost] %s\n' "$*"; }
 die()  { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
@@ -48,7 +68,8 @@ qemu_pid() { local p; p=$(cat "$J/qemu.pid" 2>/dev/null || true); [ -n "$p" ] &&
 
 # base_cmd MODE -> fills the CMD array
 base_cmd() {
-  CMD=("$QEMU" -M virt -cpu cortex-a72 -accel tcg -smp "$CSMP" -m "$CMEM"
+  local qdata; qdata=$(qemu_datadir) || die "no QEMU data dir (keymaps) found for $QEMU - re-run step 3"
+  CMD=("$QEMU" -L "$qdata" -M virt -cpu cortex-a72 -accel tcg -smp "$CSMP" -m "$CMEM"
     -display none -monitor none -serial "file:$J/console.log" -no-reboot
     -kernel "$CVM/vmlinuz" -initrd "$CVM/initrd.img"
     -append "console=ttyAMA0 panic=-1 loglevel=4 inferno.data=$DATA"

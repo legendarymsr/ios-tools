@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.0.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.1.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,7 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.1 keymap fix:** the iOS VM died at start with `could not read keymap file: 'en-us'`: the step 3 build-tree QEMU was never installed, so it had no data dir. `run-t8030.sh` and `companion-vm.sh` now find one at runtime (build `qemu-bundle`/`pc-bios`, `/usr/local/share/qemu`, `/usr/share/qemu`, else the Inferno source's `pc-bios/keymaps`) and pass it with `-L`. No rebuild needed.
 - **v1.2.0:** new step 5 **Restore iOS (automatic)** (see above). Steps after it
   are renumbered: 6 Boot, 7 Status, 8 Jailbreak. Boot now refuses a blank or
   half-restored disk and tells you to run step 5. Step 8 writes the jailbreak
@@ -189,7 +190,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.1.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
