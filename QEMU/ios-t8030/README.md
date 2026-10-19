@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.8.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.9.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,26 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.9 USB-host VM: Inferno's async usb-tcp-remote + crash fixes:**
+  - **Why it still died:** in cc4302a the USB-host side of the virtual cable (`hw/usb/dev-tcp-remote.c`) runs a reader thread next to the QEMU main loop and busy-waits, with the global lock dropped, for every USB transfer. That leaves several ways to abort or crash under a slow, racy link:
+    - responses parked in the completion queue for packets that EHCI had already cancelled and freed (use-after-free: "usb packet state check failed" or SIGSEGV);
+    - the reader holding a packet pointer while it waits for the payload;
+    - completing packets out of order (`usb_packet_complete` asserts the packet is first on its endpoint);
+    - completing non-async packets on disconnect;
+    - `error_abort` on a reattach.
+  - **New `inferno-usb-tcp-remote-async.patch` (replaces the v1.2.7 patch; step 3 undoes the old one):**
+    - It brings in Inferno `dev`'s rewrite of this device (7900ece "dev-tcp-remote: make async"): no thread, no busy-wait, every transfer async in the main loop. It only touches the USB-host side and the wire protocol is unchanged, so the iOS side (`hcd-tcp.c`) stays as is. Inferno `dev`'s iOS-side changes need newer QEMU I/O-channel APIs and are not backported.
+    - On top of that: payloads are read before the packet is looked up, and a cancelled packet is removed from the completion queue. Completion waits for older packets on the same endpoint and skips packets that are no longer async. A disconnect leaves outstanding packets to the detach, which cancels them. A coroutine of an old connection cannot close the new one, a pending cleanup is finished before a new accept, and a failed attach is logged instead of aborting.
+  - **XHCI was not used:** ChefKiss troubleshooting says not to use an XHCI controller ("currently not supported by the main VM side", Inferno #233), so the companion stays on EHCI.
+  - **What step 5 prints when the USB-host VM stops:** right above the final `[ERROR]`, on one screen:
+    - the exit status or signal and what it means;
+    - where QEMU ended up: `oom_score_adj` and its cgroup, with a warning if it is still in an Android app cgroup;
+    - any host OOM line;
+    - the last 15 lines of the QEMU stderr, which carry the assertion text;
+    - the last 8 guest console lines.
+    
+    The full report is saved as `restore/companion-report.<time>.txt`. The cgroup placement is also logged every time the USB-host VM starts.
+  - **Re-run step 3:** it recompiles `hw/usb/dev-tcp-remote.c` (plus `dart.c` if v1.2.8's step 3 never ran) and relinks, usually 5-10 min. Then run step 5.
 - **v1.2.8 SEP DART panic with verified SEP files:**
   - **What the panic is:** `t8020dart invalid lock state` comes from the iOS kernel's SEP DART driver. It panics when a DART interrupt arrives (`DART interrupt while disabled by the client`) while the driver has the DART disabled. In Inferno, the emulated SEP is its own vCPU whose whole DMA window goes through `dart-sep` (`apple_sep_from_node(..., apple_dart_iommu_mr(dart-sep))`). Under MTTCG it runs in parallel with, and on a slow phone often behind, the AP kernel. So an SEP access that faults just as the kernel turns the DART off raises exactly this interrupt. With good SEP files this is timing, not bad files. step 4's `check-sep.py` already verifies the ROM and firmware, and steps 5 and 6 refuse to boot otherwise.
   - **Inferno patch `inferno-dart-error-lock.patch` (step 3, incremental):** the AP clearing DART error bits (`ERROR_STATUS` write) was done without the lock that the SEP vCPU holds while it records a fault and raises the IRQ. A clear racing with a new fault could put back bits the kernel had already handled (a stale interrupt after it disabled the DART), or lower the IRQ over a new error. The clear and the IRQ re-evaluation now run under that lock. This removes one way to get the panic. It cannot remove the underlying SEP-vs-AP timing.
@@ -217,7 +237,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.8.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.9.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

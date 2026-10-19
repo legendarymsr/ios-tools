@@ -171,8 +171,17 @@ fi
 # a stale "already handled" DART interrupt under MTTCG (one cause of the
 # "t8020dart invalid lock state" panic). Again one file + relink.
 HERE=$(cd "$(dirname "$0")" && pwd)
-PATCH_ID="ios-tools-patches-2"
-for p in inferno-usb-tcp-remote-fix.patch inferno-dart-error-lock.patch; do
+PATCH_ID="ios-tools-patches-3"
+# v1.2.9 replaces the v1.2.7 usb-tcp-remote fix with Inferno dev's async
+# rewrite of the device (7900ece "dev-tcp-remote: make async", companion side
+# only, same wire protocol) plus fixes for its remaining crash paths. Undo the
+# old patch first if this tree has it.
+old="$HERE/inferno-usb-tcp-remote-fix.patch"
+if [ -f "$old" ] && git -C "$SRC" apply --reverse --check "$old" >/dev/null 2>&1; then
+  git -C "$SRC" apply --reverse "$old" || die "could not undo the old inferno-usb-tcp-remote-fix.patch"
+  log "patch inferno-usb-tcp-remote-fix.patch: removed (superseded)"
+fi
+for p in inferno-usb-tcp-remote-async.patch inferno-dart-error-lock.patch; do
   pf="$HERE/$p"
   [ -f "$pf" ] || die "$p missing next to $0 (copy the whole payload)"
   if git -C "$SRC" apply --reverse --check "$pf" >/dev/null 2>&1; then

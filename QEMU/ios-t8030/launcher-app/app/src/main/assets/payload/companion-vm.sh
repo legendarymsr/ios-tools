@@ -128,6 +128,7 @@ JOB
     echo "$OOMADJ" > "/proc/$p/oom_score_adj" 2>/dev/null || true
     renice -n "${COMPANION_NICE:--10}" -p "$p" >/dev/null 2>&1 || true
     for c in /sys/fs/cgroup /acct; do [ -w "$c/cgroup.procs" ] && echo "$p" > "$c/cgroup.procs"; done 2>/dev/null || true
+    { echo "oom_score_adj=$(cat /proc/$p/oom_score_adj 2>/dev/null)"; tr "\n" " " < /proc/$p/cgroup 2>/dev/null; echo; } > "$J/placement.txt"
     wait "$p"; echo "$? $(date +%s)" > "$J/qemu.exit"' companion-wrap "${CMD[@]}" > "$J/qemu.log" 2>&1 < /dev/null &
   local i
   for i in $(seq 1 50); do [ -s "$J/qemu.pid" ] && break; sleep 0.1; done
@@ -231,9 +232,22 @@ apfs_run() {
 }
 
 # report: why the USB-host VM ended + the useful part of its logs
-report() {
-  local ex code ts sig
+# brief: what step 5 prints right above its final [ERROR] (fits one screen)
+brief() {
   echo "----- USB-host VM: why it stopped -----"
+  reason
+  if [ -s "$J/placement.txt" ]; then
+    echo "placement: $(head -c 300 "$J/placement.txt")"
+    if grep -q uid_ "$J/placement.txt"; then echo "WARNING: QEMU stayed in an Android app cgroup - the phantom-process killer can SIGKILL it"; fi
+  fi
+  echo "--- QEMU stderr (last 15) ---"
+  grep -vE 'TCP_USB_RESPONSE.*Invalid packet|dropping a response' "$J/qemu.log" 2>/dev/null | tail -n 15 | cut -c1-200
+  echo "--- guest console (last 8) ---"
+  tail -n 8 "$J/console.log" 2>/dev/null | tr -d '\r' | cut -c1-200
+  return 0
+}
+reason() {
+  local code ts sig
   if p=$(qemu_pid); then
     echo "still running (pid $p)"
   elif [ -s "$J/qemu.exit" ]; then
@@ -254,11 +268,17 @@ report() {
   else
     echo "QEMU is gone and left no exit status (killed together with its wrapper?)"
   fi
-  [ -f "$J/job.rc" ] && echo "guest job (usbmuxd) exit status: $(cat "$J/job.rc")"
   if command -v dmesg >/dev/null 2>&1; then
-    local oom; oom=$(dmesg 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process|lowmemorykiller|lmkd' | grep -i qemu | tail -n 5)
+    local oom; oom=$(dmesg 2>/dev/null | grep -iE 'out of memory|oom-kill|killed process|lowmemorykiller|lmkd' | grep -i qemu | tail -n 3)
     [ -n "$oom" ] && { echo "host kernel log mentions an OOM kill of QEMU:"; echo "$oom"; }
   fi
+  return 0
+}
+report() {
+  echo "----- USB-host VM: why it stopped -----"
+  reason
+  [ -f "$J/job.rc" ] && echo "guest job (usbmuxd) exit status: $(cat "$J/job.rc")"
+  [ -s "$J/placement.txt" ] && echo "placement: $(cat "$J/placement.txt")"
   echo "----- USB-host VM console (last 40 lines) -----"
   tail -n 40 "$J/console.log" 2>/dev/null | tr -d '\r'
   echo "----- USB-host VM QEMU log (last 20 lines) -----"
@@ -274,5 +294,6 @@ case "${1:-}" in
   apfs-run) shift; apfs_run "$@" ;;
   status) if p=$(qemu_pid); then echo "running (pid $p)"; else echo "stopped"; fi ;;
   report) report ;;
-  *) die "usage: $0 usbmux | stop | apfs-run COMMAND... | status | report" ;;
+  brief) brief ;;
+  *) die "usage: $0 usbmux | stop | apfs-run COMMAND... | status | report | brief" ;;
 esac

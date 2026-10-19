@@ -38,7 +38,10 @@ DISKS="root firmware syscfg ctrl_bits nvram effaceable panic_log sep_nvram sep_s
 
 log()  { printf '[*] %s\n' "$*"; }
 warn() { printf '[!] %s\n' "$*"; }
-die()  { printf '[ERROR] %s\n' "$*"; echo "failed:$(state)" > "$R/state.failed" 2>/dev/null; exit 1; }
+die()  {
+  # keep the USB-host VM's reason directly above the [ERROR] line
+  [ -s "$R/companion-last.txt" ] && { echo "===== last USB-host VM stop in this run ====="; cat "$R/companion-last.txt"; }
+  printf '[ERROR] %s\n' "$*"; echo "failed:$(state)" > "$R/state.failed" 2>/dev/null; exit 1; }
 state() { cat "$R/state" 2>/dev/null || echo new; }
 set_state() { echo "$1" > "$R/state"; log "state -> $1"; }
 mkdir -p "$R"
@@ -87,6 +90,7 @@ cleanup_vms() {
   fi
   bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
 }
+rm -f "$R/companion-last.txt"
 echo "===== restore worker $(date -Iseconds 2>/dev/null || date) state=$(state) ====="
 
 # --- preflight ---
@@ -98,8 +102,8 @@ for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run ste
 [ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
 # v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-2' /root/Inferno/build/.ios-tools-patches; then
-  die "Inferno needs the v1.2.8 patches (USB + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-3' /root/Inferno/build/.ios-tools-patches; then
+  die "Inferno needs the v1.2.9 patches (USB-host rewrite + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
@@ -290,12 +294,15 @@ stop_ios() {
 }
 restart_companion() {
   COMP_RESTARTS=$((COMP_RESTARTS + 1))
-  bash "$HERE/companion-vm.sh" report
+  bash "$HERE/companion-vm.sh" report > "$R/companion-report.$(date +%Y%m%d-%H%M%S).txt" 2>&1
+  bash "$HERE/companion-vm.sh" brief > "$R/companion-last.txt" 2>&1
+  cat "$R/companion-last.txt"
   [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
     || die "the USB-host VM stopped $COMP_RESTARTS times (reason and logs above)"
   warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6})"
   bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start again"
+  log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
   COMP_RESTART_T=$(date +%s)
   # Inferno's iOS side connects its USB cable once, when iOS turns USB on.
   # If that already happened, iOS will never see the new USB-host VM and
@@ -321,6 +328,7 @@ restart_companion() {
 stage1_once() {
   COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1; PANIC_REBOOTS=0; WAS_LINKED=0
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
+  log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
   : > "$R/inferno.log"
   start_ios
   log "waiting for the restore ramdisk to show up over USB (TCG on a phone: often 20-90 min)"
