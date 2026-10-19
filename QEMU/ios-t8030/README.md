@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.5.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.6.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,12 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.6 restore recovers from a lost USB-host VM:**
+  - **Most likely cause of the companion dying when the ramdisk is ready:** Inferno's `usb-tcp-remote` relays every USB transfer between the two QEMUs asynchronously. Its reconnect/cleanup path completes queued packets without checking that they are still in flight, so a packet that EHCI already cancelled hits QEMU's packet-state assertion (SIGABRT). On the phone, the USB-host VM ran under TCG with **1 vCPU** (since v1.2.2), next to 7 iOS vCPUs, and also polled `lsusb` every 10 s. Its guest then time-outs and cancels URBs while iOS enumerates, which is exactly that race.
+  - **USB-host VM now matches the ChefKiss reference companion:** `-m 1G -smp 2`, plus `nice -10`. It watches the bus through sysfs only (no `lsusb` control requests), and restarts usbmuxd forever instead of powering off.
+  - **Step 5 keeps the iOS VM running if the USB-host VM stops:** it prints the reason (exit status / signal, e.g. 134 = assertion), restarts the USB-host VM (up to 6 times) and keeps the iOS VM running. iOS reconnects the next time it brings USB up. If it hasn't reconnected within `RECONNECT_WAIT` (900 s), the iOS VM is rebooted. Nothing is on its disks yet at that point.
+  - **Failed attempts are retried:** a failed idevicerestore run (e.g. the USB-host VM died mid-restore) retries stage 1 from the blank disks, up to `STAGE1_ATTEMPTS` (3).
+  - **idevicerestore starts within ~2 s of the device appearing:** polling is every 2 s (`DEVICE_POLL`), because iOS waits only 120 s for the host ("waiting for host to trigger start of restore").
 - **v1.2.5 USB-host VM kept alive:**
   - **Why the VM died:** the app's root shell and everything it starts (both QEMUs) lived in the app's cgroup. There, Android's phantom-process killer and its per-app process-group kill can SIGKILL a CPU-heavy QEMU once the launcher is in the background (for example while you watch the VNC viewer).
   - **Steps now leave the app's cgroup:** steps 2-8 move themselves to the root cgroup (`/sys/fs/cgroup`, `/acct`) first. The USB-host VM also gets `oom_score_adj -800` and a 128 MB TCG code buffer (`COMPANION_TB_MB`).
@@ -199,7 +205,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.5.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.6.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

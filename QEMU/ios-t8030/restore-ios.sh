@@ -216,35 +216,84 @@ for raw in sys.stdin:
 }
 
 # ------------------------------------------------------------ stage 1 --------
-if [ "$(state)" = new ]; then
-  if pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null 2>&1; then
-    die "an iOS VM is already running (Boot step?) - stop it first"
-  fi
-  set_state stage1-running
-  COMPANION_SMP="${COMPANION_SMP:-1}" bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
+# usb_link: has the iOS VM connected to the USB-host VM's usb-tcp-remote
+# socket? Inferno's iOS side connects when iOS turns its USB controller on
+# (DCTL run/stop), so after the USB-host VM is restarted it reconnects the
+# next time iOS brings USB up (e.g. after the ramdisk reboots).
+usb_link() {
+  local n; n=$(awk -v p="$USB_SOCK" '$NF == p' /proc/net/unix 2>/dev/null | wc -l)
+  if [ "$n" -ge 2 ]; then echo "connected"; elif [ "$n" -ge 1 ]; then echo "not yet"; else echo "no socket"; fi
+}
+has_panic() { tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'panic\(cpu|SEP Panic|SEP ROM boot panic'; }
+companion_up() { bash "$HERE/companion-vm.sh" status | grep -q running; }
 
-  log "booting the iOS restore ramdisk ($(basename "$RAMDISK")); watch it with 'Open VNC viewer'"
+start_ios() {
+  [ -s "$R/ios-serial.log" ] && cp -f "$R/ios-serial.log" "$R/ios-serial.$(date +%Y%m%d-%H%M%S).log"
   : > "$R/ios-serial.log"
+  log "booting the iOS restore ramdisk ($(basename "$RAMDISK")); watch it with 'Open VNC viewer'"
   RESTORE_MODE=1 SMP="${RESTORE_SMP:-${SMP:-7}}" USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" \
     SERIAL_QEMU="-serial file:$R/ios-serial.log" \
-    setsid bash "$HERE/run-t8030.sh" > "$R/inferno.log" 2>&1 < /dev/null &
+    setsid bash "$HERE/run-t8030.sh" >> "$R/inferno.log" 2>&1 < /dev/null &
   IOS_PID=$!
+}
+stop_ios() {
+  [ -n "$IOS_PID" ] || return 0
+  kill "$IOS_PID" 2>/dev/null; sleep 3; kill -9 "$IOS_PID" 2>/dev/null || true
+  pkill -f 'qemu-system-aarch64.*-M t8030' 2>/dev/null || true
+  IOS_PID=""
+}
+restart_companion() {
+  COMP_RESTARTS=$((COMP_RESTARTS + 1))
+  bash "$HERE/companion-vm.sh" report
+  [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
+    || die "the USB-host VM stopped $COMP_RESTARTS times (reason and logs above)"
+  warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6}); the iOS VM keeps running"
+  bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+  bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start again"
+  COMP_RESTART_T=$(date +%s)
+}
 
-  # usb_link: has the iOS VM connected to the USB-host VM's usb-tcp-remote
-  # socket yet? Inferno connects once, when iOS enables its USB controller.
-  usb_link() {
-    local n; n=$(awk -v p="$USB_SOCK" '$NF == p' /proc/net/unix 2>/dev/null | wc -l)
-    if [ "$n" -ge 2 ]; then echo "connected"; elif [ "$n" -ge 1 ]; then echo "not yet"; else echo "no socket"; fi
-  }
+# One stage-1 attempt: returns 0 when idevicerestore finished, 10 when it is
+# worth retrying from the blank disks; dies on errors a retry won't fix.
+stage1_once() {
+  COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1
+  bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
+  : > "$R/inferno.log"
+  start_ios
   log "waiting for the restore ramdisk to show up over USB (TCG on a phone: often 20-90 min)"
-  t0=$(date +%s); next=0; udid=""
+  local t0 next el udid=""
+  t0=$(date +%s); next=0
   while :; do
-    kill -0 "$IOS_PID" 2>/dev/null || { show_panic; die "the iOS VM exited before the device appeared (panic/log above)"; }
-    bash "$HERE/companion-vm.sh" status | grep -q running || { bash "$HERE/companion-vm.sh" report; tail -n 5 "$R/ios-serial.log" 2>/dev/null | tr -d '\r' | sed 's/^/[ios] /'; die "the USB-host VM stopped (reason and logs above)"; }
+    if ! kill -0 "$IOS_PID" 2>/dev/null; then
+      show_panic
+      has_panic && die "the iOS VM panicked before the device appeared (panic above)"
+      IOS_STARTS=$((IOS_STARTS + 1))
+      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM exited 3 times before the device appeared (log above)"
+      warn "the iOS VM exited without a panic - booting it again ($IOS_STARTS/3)"
+      start_ios
+    fi
+    companion_up || restart_companion
     if grep -qE 'Cannot connect to server|Socket path too long|Port specified for UNIX socket' "$R/inferno.log" 2>/dev/null; then
       grep -E 'Cannot connect|Socket path|Port specified' "$R/inferno.log" | tail -n 3
-      die "the iOS VM could not connect its USB port to the USB-host VM ($USB_SOCK) - tap the step again"
+      warn "the iOS VM could not connect its USB port - rebooting it"
+      sed -i 's/Cannot connect to server/(seen) cannot connect/' "$R/inferno.log"
+      stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
+      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM could not connect to the USB-host VM ($USB_SOCK)"
+      start_ios
     fi
+    # After a USB-host VM restart, iOS has to bring USB up again to reconnect.
+    # Give it RECONNECT_WAIT seconds, then reboot the iOS VM (nothing has been
+    # written to its disks before idevicerestore starts).
+    if [ "$COMP_RESTART_T" -gt 0 ] && [ "$(usb_link)" != connected ] \
+       && [ $(( $(date +%s) - COMP_RESTART_T )) -gt "${RECONNECT_WAIT:-900}" ]; then
+      warn "iOS did not reconnect to the restarted USB-host VM within ${RECONNECT_WAIT:-900} s - rebooting the iOS VM"
+      stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
+      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB-host VM"
+      start_ios; COMP_RESTART_T=0
+    fi
+    [ "$(usb_link)" = connected ] && COMP_RESTART_T=0
+    # iOS waits only 120 s for the host ("waiting for host to trigger start
+    # of restore"), so poll often: idevice_id is cheap.
     udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
     [ -n "$udid" ] && break
     el=$(( $(date +%s) - t0 ))
@@ -253,12 +302,12 @@ if [ "$(state)" = new ]; then
       printf '[*] %3d min: USB link %s; iOS: %s\n' $((el / 60)) "$(usb_link)" "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
       next=$((next + 120))
     fi
-    sleep 15
+    sleep "${DEVICE_POLL:-2}"
   done
-  log "device in restore mode: $udid ($(( ($(date +%s) - t0) / 60 )) min)"
+  log "device in restore mode: $udid ($(( ($(date +%s) - t0) / 60 )) min) - starting idevicerestore now"
 
-  log "running idevicerestore (erase restore; the guest closes itself when stage 1 is done)"
   mkdir -p "$R/cache"
+  local irc
   set -o pipefail
   USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" stdbuf -oL -eL \
     idevicerestore --erase --restore-mode --no-input --plain-progress -i "$ECID" -T "$DATA/root_ticket.der" \
@@ -267,10 +316,15 @@ if [ "$(state)" = new ]; then
   set +o pipefail
   if [ "$irc" != 0 ]; then
     show_panic
-    die "idevicerestore failed (exit $irc). Full log: $R/idevicerestore.log.raw. Tap the step again to retry from the blank backup."
+    companion_up || bash "$HERE/companion-vm.sh" report
+    grep -E 'ERROR|error' "$R/idevicerestore.log.raw" | tail -n 5
+    has_panic && die "idevicerestore failed (exit $irc) and iOS panicked (above). Full log: $R/idevicerestore.log.raw"
+    warn "idevicerestore failed (exit $irc). Full log: $R/idevicerestore.log.raw"
+    return 10
   fi
   grep -q '^DONE' "$R/idevicerestore.log.raw" || warn "idevicerestore exited 0 but did not print DONE"
   log "idevicerestore finished; waiting for the iOS VM to close (up to 15 min)"
+  local i
   for i in $(seq 1 180); do kill -0 "$IOS_PID" 2>/dev/null || break; sleep 5; done
   if kill -0 "$IOS_PID" 2>/dev/null; then
     warn "iOS VM did not close by itself - stopping it"
@@ -279,6 +333,26 @@ if [ "$(state)" = new ]; then
   IOS_PID=""
   bash "$HERE/companion-vm.sh" stop
   root_blank && die "idevicerestore reported success but the root disk is still blank"
+  return 0
+}
+
+if [ "$(state)" = new ]; then
+  if pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null 2>&1; then
+    die "an iOS VM is already running (Boot step?) - stop it first"
+  fi
+  set_state stage1-running
+  attempt=1
+  while :; do
+    log "stage 1, attempt $attempt/${STAGE1_ATTEMPTS:-3}"
+    rc=0; stage1_once || rc=$?
+    [ "$rc" = 0 ] && break
+    [ "$attempt" -lt "${STAGE1_ATTEMPTS:-3}" ] || die "stage 1 failed $attempt times (logs above). Tap the step again to retry."
+    warn "retrying stage 1 from the blank disks"
+    stop_ios
+    bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+    restore_blank
+    attempt=$((attempt + 1))
+  done
   set_state stage1-done
 fi
 
