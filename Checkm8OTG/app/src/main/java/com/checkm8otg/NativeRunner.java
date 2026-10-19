@@ -10,21 +10,25 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Runs a bundled native tool (gaster / palera1n) as root with:
  *   - live line-by-line streaming of stdout AND stderr into the app log
  *   - an explicit root pre-check with a loud error if su is missing
  *   - a USB pre-flight that logs what /dev/bus/usb looks like to the tool
- *   - a cancellable child process (own session via setsid) so a stuck
- *     run (e.g. gaster retrying against an unreachable device) can be
- *     stopped instead of freezing the UI for the 900s libsu timeout.
+ *   - a cancellable child process (own session via setsid) so a stuck run can
+ *     be stopped instead of freezing the UI for the 900s libsu timeout.
  *
- * Every path reports something: the command, each output line, and a
- * final [exit N] / [exception ...] / [cancelled] marker.
+ * The run script lives in the app cache (always writable by the app uid); the
+ * transient pid file lives in the root-managed exec dir. The exit code is read
+ * from the streamed "[exit N]" marker, so no app-owned exit file is needed.
  */
 public final class NativeRunner {
     private static final String TAG = "NativeRunner";
+    private static final Pattern EXIT_RE = Pattern.compile("^\\[exit (-?\\d+)\\]$");
 
     public interface Listener {
         void onLine(String line);
@@ -33,13 +37,11 @@ public final class NativeRunner {
 
     private NativeRunner() {}
 
-    /** Handle returned to the caller so a running job can be cancelled. */
     public static final class Handle {
-        private final File pidFile;
+        private final String pidFilePath;
         private volatile boolean cancelled = false;
-        Handle(File pidFile) { this.pidFile = pidFile; }
+        Handle(String pidFilePath) { this.pidFilePath = pidFilePath; }
 
-        /** Kill the child process group from an independent root shell. */
         public void cancel() {
             cancelled = true;
             new Thread(() -> {
@@ -49,10 +51,8 @@ public final class NativeRunner {
                             .setFlags(Shell.FLAG_MOUNT_MASTER)
                             .setTimeout(20)
                             .build();
-                    String p = pidFile.getAbsolutePath();
-                    // Negative PID targets the whole process group (setsid leader).
                     killer.newJob().add(
-                            "PID=$(cat '" + p + "' 2>/dev/null); " +
+                            "PID=$(cat '" + pidFilePath + "' 2>/dev/null); " +
                             "[ -n \"$PID\" ] && kill -TERM -\"$PID\" 2>/dev/null; " +
                             "sleep 1; " +
                             "[ -n \"$PID\" ] && kill -KILL -\"$PID\" 2>/dev/null; " +
@@ -70,27 +70,14 @@ public final class NativeRunner {
         public boolean isCancelled() { return cancelled; }
     }
 
-    /**
-     * @param ctx      context
-     * @param binary   extracted, chmod'd tool to run
-     * @param tmpDir   writable+exec TMPDIR (may be null)
-     * @param innerCmd the full shell command line to execute (binary already quoted inside)
-     * @param listener streaming callback
-     * @return a Handle that can cancel the run
-     */
     public static Handle run(Context ctx, File binary, File tmpDir,
                              String innerCmd, Listener listener) {
-        File binDir = new File(ctx.getFilesDir(), "bin");
-        //noinspection ResultOfMethodCallIgnored
-        binDir.mkdirs();
-        File script = new File(binDir, "run.sh");
-        File pidFile = new File(binDir, "run.pid");
-        File doneFile = new File(binDir, "run.exit");
-        Handle handle = new Handle(pidFile);
+        File script = new File(ctx.getCacheDir(), "run.sh");
+        String pidFilePath = Installer.EXEC_DIR + "/run.pid";
+        Handle handle = new Handle(pidFilePath);
 
         new Thread(() -> {
             try {
-                // 0) Root pre-check — fail loudly instead of running non-root silently.
                 Shell shell = Shell.getShell();
                 if (!shell.isRoot()) {
                     listener.onLine("[error] No root shell. KernelSU/Magisk did not grant this app su.");
@@ -98,15 +85,13 @@ public final class NativeRunner {
                     listener.onFinished(-1);
                     return;
                 }
-
-                // 1) Binary sanity.
                 if (binary == null || !binary.exists()) {
                     listener.onLine("[error] tool missing: " + (binary != null ? binary.getAbsolutePath() : "null"));
                     listener.onFinished(-1);
                     return;
                 }
 
-                // 2) USB pre-flight: show the tool what it will (or won't) see.
+                // USB pre-flight.
                 listener.onLine("[usb] preparing /dev/bus/usb access…");
                 List<String> pre = new CallbackList<String>() {
                     @Override public void onAddElement(String s) { listener.onLine(s); }
@@ -122,7 +107,7 @@ public final class NativeRunner {
                         "[ -n \"$D\" ] && echo \"[usb] apple device present in sysfs\" || echo \"[usb] no apple VID (05ac) in sysfs — tool will not find the iPhone\""
                 ).to(pre).exec();
 
-                // 3) Write the real command to a script so quoting stays sane.
+                // Write the real command to a script in the app cache (app-writable).
                 String body =
                         "#!/system/bin/sh\n" +
                         "export TERM=xterm\n" +
@@ -131,7 +116,8 @@ public final class NativeRunner {
                 try (FileOutputStream fos = new FileOutputStream(script)) {
                     fos.write(body.getBytes(StandardCharsets.UTF_8));
                 }
-                Shell.cmd("chmod 755 '" + script.getAbsolutePath() + "'").exec();
+                //noinspection ResultOfMethodCallIgnored
+                script.setReadable(true, false);
 
                 listener.onLine("$ su -c " + innerCmd);
 
@@ -141,36 +127,30 @@ public final class NativeRunner {
                     return;
                 }
 
-                // 4) Run detached in its own session (setsid) so we can kill the
-                //    whole group on cancel, stream output live, and capture exit.
-                //noinspection ResultOfMethodCallIgnored
-                pidFile.delete();
-                //noinspection ResultOfMethodCallIgnored
-                doneFile.delete();
+                // Run detached (setsid) so cancel can kill the whole group.
+                final AtomicInteger exit = new AtomicInteger(-1);
                 List<String> live = new CallbackList<String>() {
-                    @Override public void onAddElement(String s) { listener.onLine(s); }
+                    @Override public void onAddElement(String s) {
+                        Matcher m = EXIT_RE.matcher(s.trim());
+                        if (m.matches()) {
+                            try { exit.set(Integer.parseInt(m.group(1))); } catch (Exception ignored) {}
+                        }
+                        listener.onLine(s);
+                    }
                 };
                 String wrapper =
+                        "rm -f '" + pidFilePath + "' 2>/dev/null; " +
                         "setsid sh '" + script.getAbsolutePath() + "' 2>&1 & " +
-                        "CHILD=$!; echo $CHILD > '" + pidFile.getAbsolutePath() + "'; " +
-                        "wait $CHILD; RC=$?; echo $RC > '" + doneFile.getAbsolutePath() + "'; " +
+                        "CHILD=$!; echo $CHILD > '" + pidFilePath + "'; " +
+                        "wait $CHILD; RC=$?; " +
+                        "rm -f '" + pidFilePath + "' 2>/dev/null; " +
                         "echo \"[exit $RC]\"";
-
-                // Single combined stream (stdout+stderr already merged via 2>&1).
                 Shell.cmd(wrapper).to(live).exec();
-
-                int rc = -1;
-                try {
-                    if (doneFile.exists()) {
-                        String s = readTrim(doneFile);
-                        if (s != null && !s.isEmpty()) rc = Integer.parseInt(s);
-                    }
-                } catch (Exception ignored) {}
 
                 if (handle.isCancelled()) {
                     listener.onLine("[cancelled] process stopped by user");
                 }
-                listener.onFinished(rc);
+                listener.onFinished(exit.get());
             } catch (Throwable e) {
                 Log.e(TAG, "run failed", e);
                 listener.onLine("[exception] " + e.getClass().getSimpleName()
@@ -180,18 +160,5 @@ public final class NativeRunner {
         }, "native-runner").start();
 
         return handle;
-    }
-
-    private static String readTrim(File f) {
-        try {
-            byte[] b = new byte[16];
-            try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
-                int n = in.read(b);
-                if (n <= 0) return "";
-                return new String(b, 0, n, StandardCharsets.UTF_8).trim();
-            }
-        } catch (Exception e) {
-            return "";
-        }
     }
 }

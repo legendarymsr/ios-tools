@@ -145,19 +145,20 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 appendLog("Root shell ready (timeout 900s).");
                 new Thread(() -> {
+                    Installer.Logger lg = this::postLog;
+                    Installer.repairOwnership(this, lg);
                     try {
-                        java.io.File f = GasterRunner.ensureBinary(this);
-                        postLog("gaster ready at " + f.getAbsolutePath() + " (" + f.length() + " bytes)");
+                        java.io.File f = GasterRunner.ensureBinary(this, lg);
+                        postLog("gaster ready at " + f.getAbsolutePath());
                     } catch (Exception e) {
-                        postLog("Failed to extract gaster: " + e.getMessage());
+                        postLog("Failed to install gaster: " + e.getMessage());
                     }
                     try {
-                        java.io.File[] bins = Palera1nRunner.ensureBinaries(this);
-                        postLog("palera1n ready at " + bins[0].getAbsolutePath() + " (" + bins[0].length() + " bytes)");
-                        postLog("checkra1n ready at " + bins[1].getAbsolutePath() + " (" + bins[1].length() + " bytes)");
-                        postLog("TMPDIR " + bins[2].getAbsolutePath());
+                        java.io.File[] bins = Palera1nRunner.ensureBinaries(this, lg);
+                        postLog("palera1n ready at " + bins[0].getAbsolutePath());
+                        postLog("checkra1n ready at " + bins[1].getAbsolutePath());
                     } catch (Exception e) {
-                        postLog("Failed to extract palera1n: " + e.getMessage());
+                        postLog("Failed to install palera1n: " + e.getMessage());
                     }
                 }, "extract-bins").start();
             }

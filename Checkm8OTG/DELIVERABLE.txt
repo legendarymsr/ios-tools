@@ -1,9 +1,21 @@
-Checkm8 OTG v1.2.0 — deliverable summary
+Checkm8 OTG v1.2.1 — deliverable summary
 ========================================
 
 APK (in repo):
   Checkm8OTG/Checkm8OTG-debug.apk
   (same bytes as Checkm8OTG/app/build/outputs/apk/debug/app-debug.apk)
+
+What changed in v1.2.1 (EACCES on extract fix):
+  - Native tools are no longer extracted over an existing file in the app
+    sandbox (an earlier root run left files root-owned -> EACCES for the app
+    uid). Install now runs through root into /data/local/tmp/checkm8otg:
+    stage asset to app cache as the app, hash it, skip if the installed copy
+    matches, else rm -f + cp to temp + rename, chmod 755, set SELinux context.
+  - Same path applied to gaster, palera1n and checkra1n; TMPDIR is a
+    root-owned dir too.
+  - Startup repairs ownership/labels of the app files dir via root (chown to
+    the app uid + restorecon).
+  - Each install step is logged.
 
 What changed in v1.2.0 (unresponsive-buttons fix):
   - Buttons now give immediate, synchronous feedback on tap (header line +
@@ -34,7 +46,7 @@ Support:
   NOT:       A12+
 
 Verified on build host:
-  - APK assembles (Gradle assembleDebug), versionName 1.2.0 / versionCode 3
+  - APK assembles (Gradle assembleDebug), versionName 1.2.1 / versionCode 4
   - Signed with the same debug key as prior releases (cert SHA-256
     6fd329b898f55b8c98496b4e33b8d8b679fa63415bfb818d26a7d8d5131379d9)
   - Bundled binaries are valid aarch64 ELFs, packaged Stored
