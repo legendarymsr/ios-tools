@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.6.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.7.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,11 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.7 USB-host VM crash fixed in Inferno, panics retried:**
+  - **Inferno patch (`inferno-usb-tcp-remote-fix.patch`, applied by step 3):** Inferno's `usb-tcp-remote` cleanup completed packets that EHCI had already cancelled (the normal completion path checks `usb_packet_is_inflight`, the cleanup path did not), which aborts QEMU with "usb packet state check failed" (SIGABRT, exit 134) when the link drops. The patch adds that check. It also waits for the old connection to be torn down before accepting a new one, and reports a failed attach instead of aborting. Inferno's `dev` branch rewrote this device ("dev-tcp-remote: make async"), but it also renames the USB protocol and options and reworks the CPU locking, so it is not cherry-picked onto the pinned commit.
+  - **Re-run step 3 once:** it applies the patch to the existing tree, and ninja recompiles only `hw/usb/dev-tcp-remote.c` and relinks `qemu-system-aarch64`, usually 3-10 min on a phone. Step 5 refuses to start until step 3 has written the `build/.ios-tools-patches` marker (`SKIP_PATCH_CHECK=1` skips the check).
+  - **Lost USB host = reboot iOS right away:** Inferno's iOS side connects its USB cable only once, when iOS turns USB on. If the USB-host VM is restarted after that point, iOS never reconnects, and restored gives up after its 120 s "waiting for host to trigger start of restore" window. Step 5 now reboots the iOS VM immediately in that case, instead of waiting 15 min.
+  - **Panic classification:** a panic is now detected while iOS is still running. Panics that mean bad SEP or firmware files stop step 5 with the `panic(cpu…)` line on the `[ERROR]` line itself: `dart-sep … TTBR invalid` and `t8020dart invalid lock state` (ChefKiss troubleshooting: "bad SEP ROM or SEP Firmware"), and `SEP ROM boot panic` / `Img4Decode`. Timing panics reboot the iOS VM, up to `PANIC_RETRIES` (3) times: `SEP/OS failed to boot`, `SEP ROM timeout - no response` (Inferno #54: "a random chance that SEP won't boot … just reboot"), watchdog, and restored giving up on its host.
 - **v1.2.6 restore recovers from a lost USB-host VM:**
   - **Most likely cause of the companion dying when the ramdisk is ready:** Inferno's `usb-tcp-remote` relays every USB transfer between the two QEMUs asynchronously. Its reconnect/cleanup path completes queued packets without checking that they are still in flight, so a packet that EHCI already cancelled hits QEMU's packet-state assertion (SIGABRT). On the phone, the USB-host VM ran under TCG with **1 vCPU** (since v1.2.2), next to 7 iOS vCPUs, and also polled `lsusb` every 10 s. Its guest then time-outs and cancels URBs while iOS enumerates, which is exactly that race.
   - **USB-host VM now matches the ChefKiss reference companion:** `-m 1G -smp 2`, plus `nice -10`. It watches the bus through sysfs only (no `lsusb` control requests), and restarts usbmuxd forever instead of powering off.
@@ -205,7 +210,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.6.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.7.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

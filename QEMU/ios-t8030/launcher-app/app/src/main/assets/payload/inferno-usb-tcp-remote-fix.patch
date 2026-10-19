@@ -1,0 +1,66 @@
+diff --git a/hw/usb/dev-tcp-remote.c b/hw/usb/dev-tcp-remote.c
+index 5639ab6..e8439f6 100644
+--- a/hw/usb/dev-tcp-remote.c
++++ b/hw/usb/dev-tcp-remote.c
+@@ -83,10 +83,18 @@ static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState *s)
+     while (!QTAILQ_EMPTY(&s->completed_queue)) {
+         p = QTAILQ_FIRST(&s->completed_queue);
+         QTAILQ_REMOVE(&s->completed_queue, p, queue);
+-        if (p->p->status == USB_RET_REMOVE_FROM_QUEUE) {
+-            dev->port->ops->complete(dev->port, p->p);
+-        } else {
+-            usb_packet_complete(USB_DEVICE(s), p->p);
++        /*
++         * Same check as usb_tcp_remote_completed_bh: the host controller may
++         * have cancelled the packet since it was queued. Completing it anyway
++         * trips "usb packet state check failed" and aborts QEMU when the
++         * remote end disconnects.
++         */
++        if (usb_packet_is_inflight(p->p)) {
++            if (p->p->status == USB_RET_REMOVE_FROM_QUEUE) {
++                dev->port->ops->complete(dev->port, p->p);
++            } else {
++                usb_packet_complete(USB_DEVICE(s), p->p);
++            }
+         }
+         g_free(p);
+     }
+@@ -359,6 +367,15 @@ static void *usb_tcp_remote_thread(void *arg)
+         // thanks to Visual for noticing that
+         qemu_mutex_lock(&s->thr_mutex);
+ 
++        /*
++         * The previous connection is torn down by cleanup_bh in the main
++         * loop; accepting (and attaching) before it ran would attach an
++         * already attached device and abort.
++         */
++        while (s->closed && s->fd != -1 && !s->stopped) {
++            qemu_cond_timedwait(&s->cond, &s->thr_mutex, 100);
++        }
++
+         if (s->closed) {
+             DPRINTF("%s: waiting on accept...\n", __func__);
+ 
+@@ -379,7 +396,21 @@ static void *usb_tcp_remote_thread(void *arg)
+             DPRINTF("%s: USB device accepted!\n", __func__);
+ 
+             bql_lock();
+-            usb_device_attach(USB_DEVICE(s), &error_abort);
++            if (USB_DEVICE(s)->attached) {
++                usb_device_detach(USB_DEVICE(s));
++            }
++            Error *attach_err = NULL;
++            usb_device_attach(USB_DEVICE(s), &attach_err);
++            if (attach_err) {
++                error_report_err(attach_err);
++                close(s->fd);
++                s->fd = -1;
++                s->closed = true;
++                migrate_del_blocker(&s->migration_blocker);
++                bql_unlock();
++                qemu_mutex_unlock(&s->thr_mutex);
++                continue;
++            }
+             bql_unlock();
+             qemu_thread_create(&s->read_thread, TYPE_USB_TCP_REMOTE ".read",
+                                usb_tcp_remote_read_thread, s,

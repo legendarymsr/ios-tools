@@ -96,6 +96,11 @@ set -a; . "$DATA/run.env"; set +a
 [ -f "$DATA/root_ticket.der" ] || die "missing $DATA/root_ticket.der - re-run step 4"
 for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run step 4"; done
 [ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
+# v1.2.7 fixes a USB-host VM crash inside Inferno's usb-tcp-remote device;
+# step 3 applies it and rebuilds just that file (a few minutes).
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'usb-tcp-remote-fix-1' /root/Inferno/build/.ios-tools-patches; then
+  die "Inferno needs the v1.2.7 USB fix: run step 3 again (only recompiles one file, ~5 min), then this step"
+fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
 # IPSW: the downloaded zip (ChefKiss's tested path); if it was deleted, the
@@ -176,7 +181,7 @@ show_panic() {
     tr -d '\r' < "$f" | tail -n 60
   fi
   echo "----- inferno.log (QEMU) -----"; tail -n 15 "$R/inferno.log"
-  if tr -d '\r' < "$f" | grep -qE 'dart-sep|t8020dart invalid lock state|SEP ROM boot panic|SEP Panic'; then
+  if [ "$(panic_kind)" = fatal ]; then
     echo "[!] this is a SEP-side panic. ChefKiss FAQ: 'bad SEP ROM or SEP Firmware'."
     echo "[!] re-run step 4 (it re-checks the SEP ROM and rebuilds a bad sep-firmware...new.img4),"
     echo "[!] then run this step again. Check: python3 $HERE/check-sep.py fw $DATA/sep-firmware.n104.RELEASE.new.img4"
@@ -225,11 +230,47 @@ usb_link() {
   if [ "$n" -ge 2 ]; then echo "connected"; elif [ "$n" -ge 1 ]; then echo "not yet"; else echo "no socket"; fi
 }
 has_panic() { tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'panic\(cpu|SEP Panic|SEP ROM boot panic'; }
+# panic_line: the one line that names the cause
+panic_line() {
+  tr -d '\r' < "$R/ios-serial.log" 2>/dev/null \
+    | grep -m1 -E 'panic\(cpu|SEP Panic|SEP ROM boot panic' | cut -c1-220
+}
+# panic_kind: "fatal" when the panic means bad SEP ROM / SEP firmware / IPSW
+# files (ChefKiss troubleshooting: dart-sep TTBR invalid = "bad SEP ROM or SEP
+# Firmware"; Img4Decode / SEP ROM boot panic = the img4 did not parse), else
+# "retry". Everything else seen on Inferno is timing: "SEP/OS failed to boot",
+# "SEP ROM timeout - no response" ("random chance that SEP won't boot ... just
+# reboot", Inferno #54), watchdog, restored giving up on a lost USB host.
+panic_kind() {
+  if tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE \
+     'dart-sep.*TTBR invalid|t8020dart invalid lock state|SEP ROM boot panic|Img4Decode|cannot find IOAESAccelerator|AppleSEPROM.*(invalid|bad)'; then
+    echo fatal
+  else
+    echo retry
+  fi
+}
+# handle_panic WHERE: show it, then reboot iOS (up to PANIC_RETRIES) or stop
+handle_panic() {
+  local pl kind; pl=$(panic_line); kind=$(panic_kind)
+  show_panic
+  stop_ios
+  if [ "$kind" = fatal ]; then
+    die "iOS panicked $1 (SEP/firmware files): ${pl:-see above}"
+  fi
+  PANIC_REBOOTS=$((PANIC_REBOOTS + 1))
+  if [ "$PANIC_REBOOTS" -gt "${PANIC_RETRIES:-3}" ]; then
+    die "iOS panicked $1 $PANIC_REBOOTS times: ${pl:-see above}"
+  fi
+  warn "iOS panicked $1: ${pl:-no panic string} - timing/USB panic, rebooting the iOS VM ($PANIC_REBOOTS/${PANIC_RETRIES:-3})"
+  companion_up || restart_companion
+  start_ios
+}
 companion_up() { bash "$HERE/companion-vm.sh" status | grep -q running; }
 
 start_ios() {
   [ -s "$R/ios-serial.log" ] && cp -f "$R/ios-serial.log" "$R/ios-serial.$(date +%Y%m%d-%H%M%S).log"
   : > "$R/ios-serial.log"
+  WAS_LINKED=0
   log "booting the iOS restore ramdisk ($(basename "$RAMDISK")); watch it with 'Open VNC viewer'"
   RESTORE_MODE=1 SMP="${RESTORE_SMP:-${SMP:-7}}" USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" \
     SERIAL_QEMU="-serial file:$R/ios-serial.log" \
@@ -247,16 +288,33 @@ restart_companion() {
   bash "$HERE/companion-vm.sh" report
   [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
     || die "the USB-host VM stopped $COMP_RESTARTS times (reason and logs above)"
-  warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6}); the iOS VM keeps running"
+  warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6})"
   bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start again"
   COMP_RESTART_T=$(date +%s)
+  # Inferno's iOS side connects its USB cable once, when iOS turns USB on.
+  # If that already happened, iOS will never see the new USB-host VM and
+  # restored gives up after its 120 s "waiting for host" window - reboot the
+  # iOS VM right away instead of waiting (nothing is written to disk yet).
+  if [ "${WAS_LINKED:-0}" = 1 ] || tr -d '\r' < "$R/ios-serial.log" 2>/dev/null \
+       | grep -qE 'enable_usb|waiting for host to trigger'; then
+    if [ -n "$IOS_PID" ] && kill -0 "$IOS_PID" 2>/dev/null; then
+      warn "iOS had already brought USB up - rebooting the iOS VM so it connects to the new USB-host VM"
+      stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
+      [ "$IOS_STARTS" -le $((3 + ${PANIC_RETRIES:-3})) ] || die "the iOS VM had to be rebooted $IOS_STARTS times"
+      start_ios
+    fi
+    COMP_RESTART_T=0
+  else
+    log "iOS has not brought USB up yet; it will connect to the new USB-host VM by itself"
+  fi
+  WAS_LINKED=0
 }
 
 # One stage-1 attempt: returns 0 when idevicerestore finished, 10 when it is
 # worth retrying from the blank disks; dies on errors a retry won't fix.
 stage1_once() {
-  COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1
+  COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1; PANIC_REBOOTS=0; WAS_LINKED=0
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
   : > "$R/inferno.log"
   start_ios
@@ -264,9 +322,14 @@ stage1_once() {
   local t0 next el udid=""
   t0=$(date +%s); next=0
   while :; do
+    if has_panic; then
+      # give the panic log a moment to finish, then reboot or stop
+      sleep 15
+      handle_panic "before the device appeared"
+      continue
+    fi
     if ! kill -0 "$IOS_PID" 2>/dev/null; then
       show_panic
-      has_panic && die "the iOS VM panicked before the device appeared (panic above)"
       IOS_STARTS=$((IOS_STARTS + 1))
       [ "$IOS_STARTS" -le 3 ] || die "the iOS VM exited 3 times before the device appeared (log above)"
       warn "the iOS VM exited without a panic - booting it again ($IOS_STARTS/3)"
@@ -291,7 +354,7 @@ stage1_once() {
       [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB-host VM"
       start_ios; COMP_RESTART_T=0
     fi
-    [ "$(usb_link)" = connected ] && COMP_RESTART_T=0
+    [ "$(usb_link)" = connected ] && { COMP_RESTART_T=0; WAS_LINKED=1; }
     # iOS waits only 120 s for the host ("waiting for host to trigger start
     # of restore"), so poll often: idevice_id is cheap.
     udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
@@ -318,7 +381,12 @@ stage1_once() {
     show_panic
     companion_up || bash "$HERE/companion-vm.sh" report
     grep -E 'ERROR|error' "$R/idevicerestore.log.raw" | tail -n 5
-    has_panic && die "idevicerestore failed (exit $irc) and iOS panicked (above). Full log: $R/idevicerestore.log.raw"
+    if has_panic; then
+      local pl; pl=$(panic_line)
+      [ "$(panic_kind)" = fatal ] && die "idevicerestore failed (exit $irc), iOS panicked (SEP/firmware files): ${pl:-see above}"
+      warn "idevicerestore failed (exit $irc) after an iOS panic: ${pl:-?} - retrying stage 1"
+      return 10
+    fi
     warn "idevicerestore failed (exit $irc). Full log: $R/idevicerestore.log.raw"
     return 10
   fi

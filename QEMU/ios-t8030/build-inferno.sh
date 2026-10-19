@@ -7,7 +7,8 @@
 # Produces /root/Inferno/build/qemu-system-aarch64 and qemu-img (aarch64
 # glibc binaries for the chroot). TCG-only for the iOS guest.
 #
-# Re-runs are safe: a finished build is detected, a half-finished build with
+# Re-runs are safe: a finished build is detected (ninja only rebuilds what
+# changed, e.g. after a new ios-tools patch: one file + link, a few minutes), a half-finished build with
 # the same commit + configure flags is resumed with ninja, and anything else
 # (other commit/flags, broken checkout, failed configure) is cleaned first.
 #
@@ -159,6 +160,27 @@ else
 fi
 [ -f "$SRC/util/mlib/m-core.h" ] || die "util/mlib is empty after fetch"
 
+# ---------- ios-tools patches on top of the pinned commit -------------------
+# inferno-usb-tcp-remote-fix.patch: the USB-host (companion) side of the
+# virtual USB cable aborted QEMU ("usb packet state check failed") when the
+# iOS side disconnected while a packet was already cancelled, and could abort
+# on a quick reconnect. Applying it to an already built tree only recompiles
+# hw/usb/dev-tcp-remote.c and relinks qemu-system-aarch64 (a few minutes).
+HERE=$(cd "$(dirname "$0")" && pwd)
+PATCH_ID="usb-tcp-remote-fix-1"
+for p in inferno-usb-tcp-remote-fix.patch; do
+  pf="$HERE/$p"
+  [ -f "$pf" ] || die "$p missing next to $0 (copy the whole payload)"
+  if git -C "$SRC" apply --reverse --check "$pf" >/dev/null 2>&1; then
+    log "patch $p: already applied"
+  elif git -C "$SRC" apply --check "$pf" >/dev/null 2>&1; then
+    git -C "$SRC" apply "$pf" || die "applying $p failed"
+    log "patch $p: applied (ninja rebuilds only the changed file)"
+  else
+    die "$p does not apply to $SRC - CLEAN_SRC=1 to re-download the source"
+  fi
+done
+
 # ---------- configure (reuse only an identical, completed configure) -------
 TARGETS="aarch64-softmmu"
 [ "${FULL_TARGETS:-0}" = "1" ] && TARGETS="aarch64-softmmu,x86_64-softmmu"
@@ -203,6 +225,7 @@ fi
 for b in qemu-system-aarch64 qemu-img; do
   [ -x "./$b" ] || die "build finished but $SRC/build/$b is missing"
 done
+echo "$PATCH_ID" > .ios-tools-patches
 ./qemu-system-aarch64 -machine help | grep -qE '^t8030[[:space:]]' \
   || die "built qemu-system-aarch64 has no t8030 machine - wrong source?"
 ./qemu-system-aarch64 -version | head -n1
