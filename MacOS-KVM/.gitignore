@@ -1,0 +1,12 @@
+# Build caches
+launcher-app/.gradle/
+launcher-app/app/build/
+launcher-app/build/
+launcher-app/local.properties
+
+# Giant / copyrighted artifacts — never commit
+*.dmg
+BaseSystem.*
+*.ipsw
+mac_hdd_ng.img
+com.apple.recovery.boot/

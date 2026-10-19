@@ -23,3 +23,16 @@ QEMU/*/launcher-app/app/build/
 QEMU/*/launcher-app/build/
 QEMU/*/launcher-app/.gradle/
 QEMU/*/launcher-app/local.properties
+
+# MacOS-KVM launcher app build output
+MacOS-KVM/launcher-app/app/build/
+MacOS-KVM/launcher-app/build/
+MacOS-KVM/launcher-app/.gradle/
+MacOS-KVM/launcher-app/local.properties
+
+# Never commit Apple images / giant VM disks
+*.dmg
+*.ipsw
+BaseSystem.*
+mac_hdd_ng.img
+com.apple.recovery.boot/

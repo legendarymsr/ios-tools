@@ -35,4 +35,19 @@ QEMU itself is installed/built on-device in a Debian chroot (no Android/bionic
 QEMU exists). See [`QEMU/README.md`](QEMU/README.md) for the full picture and
 honest caveats.
 
+### MacOS-KVM
+
+KernelSU/Magisk module that installs a **"macOS KVM"** launcher app and stages
+an [OSX-KVM](https://github.com/kholia/OSX-KVM)-based **macOS 14 (Sonoma)**
+QEMU stack on the phone.
+
+- Module zip: `MacOS-KVM/macos-kvm-launcher-v1.0.0.zip`
+- Guest is **x86_64** on an **aarch64** host → **TCG only, no KVM**. Expect it
+  to be **VERY slow**; a full install may not be practical.
+- Bundles OVMF + OpenCore from OSX-KVM; downloads Sonoma recovery on-device
+  (no Apple images are committed).
+
+See [`MacOS-KVM/README.md`](MacOS-KVM/README.md) for install steps, caveats,
+and attribution.
+
 See [`Checkm8OTG/README.md`](Checkm8OTG/README.md) for full docs and caveats.
