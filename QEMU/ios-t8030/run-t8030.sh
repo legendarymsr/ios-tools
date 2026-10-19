@@ -47,9 +47,27 @@ for f in "$TICKET" "$SEPFW" "$SEPROM" "$KERNEL" "$DTB" "$TRUSTCACHE"; do
   fi
 done
 [ "$missing" = "0" ] || exit 1
+# ChefKiss troubleshooting: "at24c-eeprom: Backing file size 65536 != 2048"
+[ -f "$DATA/sep_nvram" ] && truncate -c -s 64K "$DATA/sep_nvram" 2>/dev/null || true
 
+# Restore ramdisk only while the root disk is still blank (or RESTORE_MODE=1).
+# Booting a restored disk with the Erase ramdisk would just start another
+# restore; booting a blank disk without it panics ("cannot find IOAESAccelerator").
+root_blank() {
+  [ -f "$DATA/root" ] || return 0
+  [ "$(head -c 1048576 "$DATA/root" | tr -d '\000' | wc -c)" = "0" ]
+}
 INITRD=""
-[ -n "$RAMDISK" ] && [ -f "$RAMDISK" ] && INITRD="-initrd $RAMDISK"
+if [ "${RESTORE_MODE:-auto}" = "1" ] || { [ "${RESTORE_MODE:-auto}" = "auto" ] && root_blank; }; then
+  if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
+    INITRD="-initrd $RAMDISK"
+    echo "[*] root disk is blank: booting the restore ramdisk $(basename "$RAMDISK") (start idevicerestore from the companion VM)"
+  else
+    echo "[!] root disk is blank and no restore ramdisk found - re-run step 4"
+  fi
+else
+  echo "[*] root disk has data: normal boot (RESTORE_MODE=1 forces the restore ramdisk)"
+fi
 
 # --- Accel selection ----------------------------------------------------------
 # Probe host KVM for logging. Force TCG for t8030 regardless (see header).
@@ -85,7 +103,7 @@ exec "$QEMU" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "$BOOTARGS" \
-  -smp 6 -m 4G -serial mon:stdio \
+  -smp "${SMP:-6}" -m "${MEM:-4G}" -serial mon:stdio \
   ${DISPLAY_QEMU:--display vnc=127.0.0.1:0,show-cursor=on} \
   $INITRD \
   -drive file="$DATA/sep_nvram,if=pflash,format=raw" \

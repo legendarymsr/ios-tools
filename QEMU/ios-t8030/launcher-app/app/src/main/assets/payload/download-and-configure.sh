@@ -38,7 +38,9 @@ IPSW_SIZE="${IPSW_SIZE:-5507405643}"   # Content-Length verified Oct 2026
 CHEFKISS_EXTRAS="${CHEFKISS_EXTRAS:-https://chefkiss.dev/Extras/Inferno}"
 SEPROM_URL="${SEPROM_URL:-https://securerom.fun/resources/SEPROM/AppleSEPROM-Cebu-B1}"
 SEPROM_SIZE="${SEPROM_SIZE:-86016}"
-KEYS_URL="${KEYS_URL:-https://theapplewiki.com/wiki/Keys:AzulSeed_18A5351d_(iPhone12,1)}"
+KEYS_TITLE="${KEYS_TITLE:-Keys:AzulSeed_18A5351d_(iPhone12,1)}"
+KEYS_URL="${KEYS_URL:-https://theapplewiki.com/wiki/$KEYS_TITLE}"
+# SEP IV/Key override: SEP_IVKEY=<iv><key> or $DATA/sep_ivkey.txt (never committed)
 IMG4LIB_REPO="${IMG4LIB_REPO:-https://github.com/xerub/img4lib.git}"
 
 UA="Mozilla/5.0 (Linux; Android 14) ios-tools-download/1.1"
@@ -194,10 +196,12 @@ fetch "$SEPROM_URL" "$DATA/AppleSEPROM-Cebu-B1" "$SEPROM_SIZE"
 
 # ---------- 5. python deps + forge AP ticket ----------
 log "ensuring pyasn1 is available"
-python3 -m pip install --user -q pyasn1 pyasn1-modules 2>/dev/null \
-  || pip3 install --user -q pyasn1 pyasn1-modules 2>/dev/null \
+# bookworm's pip refuses --user installs (PEP 668), so prefer apt.
+python3 -c 'import pyasn1, pyasn1_modules' 2>/dev/null \
   || apt-get install -y python3-pyasn1 python3-pyasn1-modules >/dev/null 2>&1 \
-  || warn "could not install pyasn1 — apticket step may fail"
+  || pip3 install --break-system-packages -q pyasn1 pyasn1-modules 2>/dev/null \
+  || warn "could not install pyasn1 - apticket step may fail"
+python3 -c 'import pyasn1, pyasn1_modules' 2>/dev/null || die "python3 pyasn1/pyasn1-modules missing (apt-get install python3-pyasn1 python3-pyasn1-modules)"
 
 if [ ! -f "$DATA/root_ticket.der" ]; then
   log "forging AP ticket (root_ticket.der)"
@@ -220,92 +224,171 @@ if [ ! -f "$DATA/sep_root_ticket.der" ]; then
 fi
 
 # ---------- 6. auto-detect firmware component filenames ----------
+# Paths come from BuildManifest.plist (n104ap, Erase identity) instead of
+# filename guessing. The guide boots with the Erase restore ramdisk and its
+# matching trustcache (038-44135-124.dmg[.trustcache] on 18A5351d).
 RESTORE="$DATA/Restore"
-KERNEL=$(ls "$RESTORE"/kernelcache.research.* 2>/dev/null | head -1 || true)
-DTB=$(ls "$RESTORE"/Firmware/all_flash/DeviceTree.n104ap.im4p 2>/dev/null | head -1 || true)
-# trustcache sits next to the ramdisk .dmg; pick the one matching *.dmg.trustcache
-TRUSTCACHE=$(ls "$RESTORE"/Firmware/*.dmg.trustcache 2>/dev/null | head -1 || true)
-# Erase/Upgrade ramdisk (used for restore)
-RAMDISK=$(ls "$RESTORE"/038-*.dmg 2>/dev/null | head -1 || true)
-SEPFW_IM4P=$(ls "$RESTORE"/Firmware/all_flash/sep-firmware.n104.RELEASE.im4p 2>/dev/null | head -1 || true)
+KERNEL=""; DTB=""; TRUSTCACHE=""; RAMDISK=""; SEPFW_IM4P=""
+eval "$(python3 - "$RESTORE" <<'PY'
+import plistlib, os, sys, shlex
+r = sys.argv[1]
+out = {}
+try:
+    bm = plistlib.load(open(os.path.join(r, 'BuildManifest.plist'), 'rb'))
+    ids = [b for b in bm.get('BuildIdentities', [])
+           if b.get('Info', {}).get('DeviceClass', '').lower() == 'n104ap']
+    erase = [b for b in ids if b['Info'].get('RestoreBehavior') == 'Erase'] or ids
+    m = erase[0]['Manifest'] if erase else {}
+    def p(k):
+        v = m.get(k, {}).get('Info', {}).get('Path', '')
+        return os.path.join(r, v) if v else ''
+    out['RAMDISK'] = p('RestoreRamDisk')
+    out['TRUSTCACHE'] = p('RestoreTrustCache')
+    out['DTB'] = p('DeviceTree')
+    out['SEPFW_IM4P'] = p('SEP')
+    kc = p('KernelCache')
+    rk = kc.replace('kernelcache.release.', 'kernelcache.research.') if kc else ''
+    out['KERNEL'] = rk
+except Exception as e:
+    print('echo "[!] BuildManifest parse failed: %s" >&2' % str(e).replace('"', '').replace('$', ''))
+for k, v in out.items():
+    if v and os.path.exists(v):
+        print('%s=%s' % (k, shlex.quote(v)))
+PY
+)" || true
+# Fallbacks (guide filenames / globbing)
+[ -n "$KERNEL" ]     || KERNEL=$(ls "$RESTORE"/kernelcache.research.* 2>/dev/null | head -1 || true)
+[ -n "$DTB" ]        || DTB=$(ls "$RESTORE"/Firmware/all_flash/DeviceTree.n104ap.im4p 2>/dev/null | head -1 || true)
+if [ -z "$RAMDISK" ]; then
+  # Erase ramdisk = the smallest .dmg (ChefKiss guide: smaller of the two smallest)
+  RAMDISK=$(find "$RESTORE" -maxdepth 1 -type f -name '*.dmg' -printf '%s %p\n' 2>/dev/null | sort -n | head -1 | awk '{print $2}')
+fi
+if [ -z "$TRUSTCACHE" ] && [ -n "$RAMDISK" ] && [ -f "$RESTORE/Firmware/$(basename "$RAMDISK").trustcache" ]; then
+  TRUSTCACHE="$RESTORE/Firmware/$(basename "$RAMDISK").trustcache"
+fi
+[ -n "$SEPFW_IM4P" ] || SEPFW_IM4P=$(ls "$RESTORE"/Firmware/all_flash/sep-firmware.n104.RELEASE.im4p 2>/dev/null | head -1 || true)
 
-[ -n "$KERNEL" ]     || warn "kernelcache.research.* not found under Restore/"
-[ -n "$DTB" ]        || warn "DeviceTree.n104ap.im4p not found"
-[ -n "$TRUSTCACHE" ] || warn "no *.dmg.trustcache found"
-[ -n "$SEPFW_IM4P" ] || warn "sep-firmware.n104.RELEASE.im4p not found"
+log "kernel:     ${KERNEL:-MISSING}"
+log "devicetree: ${DTB:-MISSING}"
+log "ramdisk:    ${RAMDISK:-MISSING}"
+log "trustcache: ${TRUSTCACHE:-MISSING}"
+log "sep im4p:   ${SEPFW_IM4P:-MISSING}"
 
 # ---------- 7. SEP firmware decrypt + rewrap (img4lib) ----------
 SEPFW_OUT="$DATA/sep-firmware.n104.RELEASE.new.img4"
+BUA="Mozilla/5.0 (Linux; Android 14; SM-F721B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36"
+
+build_img4lib() {
+  [ -x "$DATA/img4lib/img4" ] && return 0
+  need_cmd git; need_cmd make; need_cmd gcc
+  rm -rf "$DATA/img4lib"
+  local i
+  for i in 1 2 3; do
+    git -c http.version=HTTP/1.1 clone --depth 1 "$IMG4LIB_REPO" "$DATA/img4lib" && break
+    rm -rf "$DATA/img4lib"; sleep $((i*3))
+  done
+  if [ ! -d "$DATA/img4lib" ]; then
+    warn "git clone of img4lib failed, trying the GitHub tarball"
+    mkdir -p "$DATA/img4lib"
+    curl -fL --retry 3 "https://codeload.github.com/xerub/img4lib/tar.gz/refs/heads/master" \
+      | tar -xz -C "$DATA/img4lib" --strip-components=1 || { rm -rf "$DATA/img4lib"; return 1; }
+  fi
+  # lzfse from step 2 (/usr/local), OpenSSL from libssl-dev
+  make -C "$DATA/img4lib" \
+    LDFLAGS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib" \
+    CFLAGS='-I/usr/local/include -Wall -W -pedantic -Wno-variadic-macros -Wno-multichar -Wno-four-char-constants -Wno-unused-parameter -O2 -I. -g -DiOS10 -DDER_MULTIBYTE_TAGS=1 -DDER_TAG_SIZE=8 -D__unused="__attribute__((unused))"' \
+    || return 1
+  [ -x "$DATA/img4lib/img4" ]
+}
+
+# Print the SEP firmware IV+Key (hex) on stdout, or fail. Order: SEP_IVKEY
+# env, $DATA/sep_ivkey.txt (pasted by you), then The Apple Wiki's raw
+# wikitext, its API, and the rendered page, each via curl with browser headers
+# and via Python urllib (different TLS stack), because some networks get a 403
+# from the wiki for one client and not the other. Nothing is written to disk.
+get_sep_ivkey() {
+  if [ -n "${SEP_IVKEY:-}" ]; then echo "$SEP_IVKEY"; return 0; fi
+  if [ -s "$DATA/sep_ivkey.txt" ]; then tr -dc '0-9a-fA-F' < "$DATA/sep_ivkey.txt"; echo; return 0; fi
+  KEYS_TITLE="$KEYS_TITLE" BUA="$BUA" python3 - <<'PY'
+import os, re, subprocess, sys, json, urllib.request, urllib.parse
+t = os.environ['KEYS_TITLE']; ua = os.environ['BUA']
+q = urllib.parse.quote(t, safe=':_(),')
+urls = [
+  'https://theapplewiki.com/index.php?title=%s&action=raw' % q,
+  'https://theapplewiki.com/api.php?action=parse&page=%s&prop=wikitext&format=json&formatversion=2' % q,
+  'https://theapplewiki.com/wiki/%s' % q,
+  'https://www.theiphonewiki.com/wiki/%s?action=raw' % q,
+]
+hdr = {'User-Agent': ua,
+       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
+       'Accept-Language': 'en-US,en;q=0.9'}
+def parse(txt):
+    if txt.lstrip().startswith('{'):
+        try: txt = json.loads(txt)['parse']['wikitext']
+        except Exception: pass
+    iv = re.search(r'id="keypage-sepfirmware-iv"[^>]*>\s*([0-9a-fA-F]{32})\s*<', txt) \
+      or re.search(r'\|\s*SEPFirmwareIV\s*=\s*([0-9a-fA-F]{32})\b', txt)
+    key = re.search(r'id="keypage-sepfirmware-key"[^>]*>\s*([0-9a-fA-F]{64})\s*<', txt) \
+      or re.search(r'\|\s*SEPFirmwareKey\s*=\s*([0-9a-fA-F]{64})\b', txt)
+    return (iv.group(1) + key.group(1)).lower() if iv and key else None
+def via_curl(u):
+    a = ['curl', '-fsSL', '--compressed', '-m', '40', '--retry', '2']
+    for k, v in hdr.items(): a += ['-H', '%s: %s' % (k, v)]
+    r = subprocess.run(a + [u], capture_output=True, text=True, errors='replace')
+    if r.returncode: raise RuntimeError('curl exit %d %s' % (r.returncode, r.stderr.strip()[:80]))
+    return r.stdout
+def via_urllib(u):
+    with urllib.request.urlopen(urllib.request.Request(u, headers=hdr), timeout=40) as f:
+        return f.read().decode('utf-8', 'replace')
+for u in urls:
+    for name, fn in (('curl', via_curl), ('python', via_urllib)):
+        try:
+            v = parse(fn(u))
+            if v:
+                print('[*] SEP IV/Key found via %s: %s' % (name, u.split('?')[0]), file=sys.stderr)
+                print(v); sys.exit(0)
+            print('[!] %s %s: fetched, but no SEP IV/Key in it' % (name, u[:80]), file=sys.stderr)
+        except Exception as e:
+            print('[!] %s %s: %s' % (name, u[:80], str(e)[:100]), file=sys.stderr)
+sys.exit(1)
+PY
+}
+
 if [ "${SKIP_SEP:-0}" = "1" ]; then
-  warn "SKIP_SEP=1 — not preparing $SEPFW_OUT"
-elif [ -f "$SEPFW_OUT" ]; then
+  warn "SKIP_SEP=1 - not preparing $SEPFW_OUT"
+elif [ -s "$SEPFW_OUT" ]; then
   log "SEP firmware already prepared: $SEPFW_OUT"
-elif [ -z "${SEPFW_IM4P:-}" ] || [ ! -f "$DATA/sep_root_ticket.der" ]; then
-  warn "missing SEP im4p or sep_root_ticket.der — skipping SEP prep"
+elif [ -z "$SEPFW_IM4P" ] || [ ! -f "$DATA/sep_root_ticket.der" ]; then
+  warn "missing SEP im4p or sep_root_ticket.der - skipping SEP prep"
 else
   log "building img4lib (xerub) for SEP firmware rewrap"
-  if [ ! -x "$DATA/img4lib/img4" ]; then
-    need_cmd git
-    need_cmd make
-    rm -rf "$DATA/img4lib"
-    git clone --depth 1 "$IMG4LIB_REPO" "$DATA/img4lib"
-    # Debian/openssl paths
-    make -C "$DATA/img4lib" \
-      LDFLAGS="-L/usr/lib/aarch64-linux-gnu -L/usr/local/lib" \
-      CFLAGS='-I/usr/include/openssl -I/usr/local/include -Wall -W -pedantic -Wno-variadic-macros -Wno-multichar -Wno-four-char-constants -Wno-unused-parameter -O2 -I. -g -DiOS10 -DDER_MULTIBYTE_TAGS=1 -DDER_TAG_SIZE=8 -D__unused="__attribute__((unused))"' \
-      || warn "img4lib build failed"
-  fi
-  if [ -x "$DATA/img4lib/img4" ]; then
-    log "fetching SEP IV+Key for 18A5351d / iPhone12,1 from The Apple Wiki (not stored in the repo)"
-    KEYS_HTML="$DATA/.keys-18A5351d.html"
-    curl -fsSL -A "$UA" -o "$KEYS_HTML" "$KEYS_URL" || warn "could not fetch keys page"
-    SEP_IV=$(python3 - "$KEYS_HTML" <<'PY'
-import re,sys
-h=open(sys.argv[1],encoding='utf-8',errors='replace').read()
-m=re.search(r'id="keypage-sepfirmware-iv">([a-f0-9]{32})</code>', h)
-print(m.group(1) if m else '')
-PY
-)
-    SEP_KEY=$(python3 - "$KEYS_HTML" <<'PY'
-import re,sys
-h=open(sys.argv[1],encoding='utf-8',errors='replace').read()
-m=re.search(r'id="keypage-sepfirmware-key">([a-f0-9]{64})</code>', h)
-print(m.group(1) if m else '')
-PY
-)
-    rm -f "$KEYS_HTML"
-    if [ -n "$SEP_IV" ] && [ -n "$SEP_KEY" ]; then
-      log "decrypting SEP firmware (IV/Key from wiki, used in-memory only)"
-      "$DATA/img4lib/img4" -v \
-        -i "$SEPFW_IM4P" \
-        -o "$DATA/sep-firmware.n104.RELEASE" \
-        -k "${SEP_IV}${SEP_KEY}" \
-        || warn "img4 decrypt failed"
-      # Grab the build version string the rewrap needs (-V). Upstream guide uses
-      # the output of the decrypt step; fall back to a known-good value for this build.
-      SEP_VER=$("$DATA/img4lib/img4" -v -i "$SEPFW_IM4P" -k "${SEP_IV}${SEP_KEY}" 2>/dev/null | awk '/version:/{print $2; exit}' || true)
-      # If img4 -v doesn't print a usable version, leave -V empty and let img4 decide.
-      log "rewrapping SEP firmware -> $SEPFW_OUT"
-      if [ -n "${SEP_VER:-}" ]; then
-        "$DATA/img4lib/img4" -A -F \
-          -o "$SEPFW_OUT" \
-          -i "$DATA/sep-firmware.n104.RELEASE" \
-          -M "$DATA/sep_root_ticket.der" \
-          -T rsep -V "$SEP_VER" \
-          || warn "img4 rewrap failed"
-      else
-        "$DATA/img4lib/img4" -A -F \
-          -o "$SEPFW_OUT" \
-          -i "$DATA/sep-firmware.n104.RELEASE" \
-          -M "$DATA/sep_root_ticket.der" \
-          -T rsep \
-          || warn "img4 rewrap failed (no -V)"
-      fi
-    else
-      warn "could not parse SEP IV/Key from $KEYS_URL — prepare SEP manually (see README)"
-    fi
+  if ! build_img4lib; then
+    warn "img4lib build failed - SEP firmware not prepared (see errors above, then re-run step 4)"
   else
-    warn "img4 binary missing — SEP firmware not prepared"
+    log "fetching SEP IV+Key for 18A5351d / iPhone12,1 from The Apple Wiki (kept in memory only)"
+    IVKEY=$(get_sep_ivkey || true)
+    if ! printf '%s' "${IVKEY:-}" | grep -qE '^[0-9a-fA-F]{96}$'; then
+      warn "could not get the SEP IV+Key automatically."
+      warn "Open $KEYS_URL in a browser, copy the SEPFirmware IV then Key"
+      warn "(no spaces) into /data/local/debian/root/InfernoData/sep_ivkey.txt and re-run step 4."
+      warn "Everything already done is skipped on the re-run."
+    else
+      rm -f "$DATA/sep-firmware.n104.RELEASE"
+      # ChefKiss guide: stdout of the decrypt command IS the -V version string
+      SEP_VER=$("$DATA/img4lib/img4" -v -i "$SEPFW_IM4P" -o "$DATA/sep-firmware.n104.RELEASE" -k "$IVKEY" 2>/dev/null | tail -n1 | tr -d '\r' || true)
+      unset IVKEY
+      if [ ! -s "$DATA/sep-firmware.n104.RELEASE" ]; then
+        warn "img4 decrypt produced no output - wrong IV/Key? (fix or delete sep_ivkey.txt)"
+      elif [ -z "$SEP_VER" ]; then
+        warn "img4 -v printed no version string; cannot rewrap the SEP firmware"
+      else
+        log "SEP firmware version: $SEP_VER"
+        log "rewrapping SEP firmware -> $SEPFW_OUT"
+        "$DATA/img4lib/img4" -A -F -o "$SEPFW_OUT" -i "$DATA/sep-firmware.n104.RELEASE" \
+          -M "$DATA/sep_root_ticket.der" -T rsep -V "$SEP_VER" \
+          || { warn "img4 rewrap failed"; rm -f "$SEPFW_OUT"; }
+      fi
+    fi
   fi
 fi
 

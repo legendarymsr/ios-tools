@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.6.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.1.7.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -42,6 +42,34 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.1.7 step 3/4 fixes:**
+  - Step 3 never produced `qemu-img` / `qemu-system-aarch64`. Inferno's
+    `--enable-nettle` needs nettle >= 3.10; step 2 builds 3.10.2, but nettle
+    installs into `/usr/local/lib64`, which pkg-config and ld.so do not search,
+    so configure kept seeing bookworm's 3.8. Both paths are now registered.
+  - Step 3 only fetches the `util/mlib` submodule. The old
+    `submodule update --init --recursive` also pulled every QEMU firmware ROM
+    repo (edk2, u-boot, seabios, ...: several GB) that the build never uses.
+  - Source is a shallow fetch of the pinned commit with retries; if git keeps
+    dropping the connection (`GnuTLS recv error`), it falls back to GitHub's
+    source tarball.
+  - Re-runs: an identical finished configure is resumed with `ninja`, anything
+    else (other commit/flags, failed configure, interrupted clone) is wiped
+    first. `CLEAN=1` forces a fresh build dir, `CLEAN_SRC=1` a fresh source.
+  - The job count follows free RAM, and an OOM-killed compile is resumed with
+    `-j1`. Only `aarch64-softmmu` is built (`FULL_TARGETS=1` adds x86_64), and
+    GTK/SDL are off because the display is VNC. The step ends by checking that
+    the binary has the `t8030` machine.
+  - Step 4: the SEP IV/Key lookup no longer depends on one HTML page fetch (that
+    got a 403 on some networks). It tries The Apple Wiki raw wikitext, its API, and
+    the rendered page, each with browser headers through both curl and
+    Python. The keys stay in memory only. If every source fails, paste the
+    SEPFirmware IV followed by the Key (no spaces) into `/data/local/debian/root/InfernoData/sep_ivkey.txt` and re-run.
+  - Step 4: the SEP `-V` version string is now taken from the decrypt command's
+    output, as in the ChefKiss guide. Kernel, DeviceTree, Erase ramdisk, its
+    trustcache, and SEP paths are read from `BuildManifest.plist`.
+  - Step 5: the restore ramdisk is only passed while the `root` disk is blank
+    (`RESTORE_MODE=1` forces it), and `sep_nvram` is kept at 64 KiB.
 - **v1.1.3 Install & update Debian:** step 1 is now **Install & update Debian**.
   After the rootfs is in place (or if it already is) it runs `apt-get update`
   and `apt-get upgrade -y` inside the chroot and stops with a clear error if
@@ -84,7 +112,7 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.6.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.7.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -94,10 +122,12 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
    inside the chroot. Re-run any time to update Debian.
 2. **Install build deps** — git, ninja, meson >= 1.5 (from PyPI; bookworm's is 1.0.1), glib, pixman, gnutls, nettle
    (built from source if Debian's is < 3.10), lzfse (built from source;
-   bookworm has no package), SDL/GTK, etc.
-3. **Compile Inferno / qemu-t8030 in the chroot** — makes sure meson >= 1.5
-   is installed (pip, fails clearly otherwise), clones `ChefKissInc/Inferno` (pinned commit), configures
-   with `--target-list=aarch64-softmmu,x86_64-softmmu` and `ninja`. **Long build.**
+   bookworm has no package), etc.
+3. **Compile Inferno / qemu-t8030 in the chroot**: checks meson >= 1.5 and
+   nettle >= 3.10, fetches `ChefKissInc/Inferno` at the pinned commit (+ `util/mlib`),
+   configures `aarch64-softmmu` with VNC output, and builds `qemu-system-aarch64` +
+   `qemu-img` into `/root/Inferno/build`. **Long build** (30-90 min). Safe to
+   re-run: it resumes or cleans as needed.
 4. **Download & Configure (Apple IPSW)** — the one-tap setup:
    - `curl -C -` resumes the IPSW from Apple's CDN
    - verifies the expected `Content-Length` (5507405643 bytes)
@@ -136,7 +166,8 @@ and the NixOS iOS-emulation wiki document.
 DATA=/root/InfernoData bash /root/download-and-configure.sh
 cd /root/InfernoData && bash /root/run-t8030.sh
 # restore/upgrade ramdisk:
-RAMDISK=Restore/038-….dmg bash /root/run-t8030.sh
+RESTORE_MODE=1 bash /root/run-t8030.sh   # force the restore ramdisk
+RESTORE_MODE=0 bash /root/run-t8030.sh   # force a normal boot
 ```
 
 A full IPSW restore still needs the companion VM + `idevicerestore` (see the
