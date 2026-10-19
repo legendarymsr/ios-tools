@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.10.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.11.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,14 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.2.11 NAK no longer drops the USB link:**
+  - **Cause:** Inferno dev's async `usb-tcp-remote` (brought in by v1.2.9) answers every USB transfer asynchronously. When the iPhone side replied NAK ("no data yet", the normal answer to interrupt/bulk IN polling), it printed `USB_RET_NAK|ASYNC an ASYNC packet` and closed the whole link. With cc4302a's blocking version the same NAK simply went back to EHCI synchronously, and EHCI polled again. QEMU does not allow an async packet to be completed with NAK, so this case needs its own handling.
+  - **Fix (in `inferno-usb-tcp-remote-async.patch`):**
+    - **NAK:** the packet stays pending and the same request is sent to the iPhone side again after 2 ms, just as EHCI would re-poll. A cancel removes it from that retry list, and a disconnect drops the list (the detach cancels the packets).
+    - **ASYNC reply:** an `ASYNC` reply leaves the packet pending until its final reply.
+    - **Unknown status:** it is logged (`usb-tcp-remote: unexpected status …`, also shown by step 5) and fails only that packet with `USB_RET_IOERROR`.
+    - **No status closes the link any more.**
+  - **Re-run step 3:** it replaces the v1.2.10 version of the patch; only `hw/usb/dev-tcp-remote.c` is recompiled, plus the relink, ~5 min. Then run step 5.
 - **v1.2.10 iOS side of the USB link:**
   - **How Inferno cc4302a connects (`hw/usb/hcd-tcp.c`):**
     - The iOS QEMU connects to the USB-host socket only in `usb_tcp_host_attach`. That runs when iOS sets DCTL RUN_STOP on the emulated DWC3 (`hcd-dwc3.c`), i.e. when the restore ramdisk enables USB. Nothing connects at machine init.
@@ -255,7 +263,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.10.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.11.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

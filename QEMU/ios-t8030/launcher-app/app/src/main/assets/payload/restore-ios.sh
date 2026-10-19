@@ -102,8 +102,8 @@ for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run ste
 [ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
 # v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-4' /root/Inferno/build/.ios-tools-patches; then
-  die "Inferno needs the v1.2.10 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-5' /root/Inferno/build/.ios-tools-patches; then
+  die "Inferno needs the v1.2.11 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
@@ -268,7 +268,7 @@ show_usb_msgs() {
   n=$(wc -l < "$DATA/companion/qemu.log" 2>/dev/null || echo 0)
   [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
   if [ "$n" -gt "$USBMSG_C" ]; then
-    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote: the iPhone' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
+    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote: (the iPhone|unexpected status)' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
     USBMSG_C=$n
   fi
 }
