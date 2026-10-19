@@ -43,7 +43,12 @@ PKGS="git build-essential cmake libtool meson ninja-build pkg-config \
   libgnutls28-dev libgmp10 libgmp-dev libattr1-dev libcap-ng-dev \
   libssl-dev openssl \
   python3 python3-pip python3-venv python3-setuptools python3-wheel \
-  curl ca-certificates unzip wget xz-utils file bzip2 tar m4"
+  curl ca-certificates unzip wget xz-utils file bzip2 tar m4 \
+  autoconf automake libtool-bin libcurl4-openssl-dev libzip-dev libreadline-dev \
+  busybox-static cpio kmod usbutils bc bison flex libelf-dev"
+# The last two lines are for step 5 (Restore iOS): build-restore-tools.sh
+# builds libimobiledevice/idevicerestore/usbmuxd (autotools, libcurl, libzip)
+# and the USB-host VM (busybox-static initramfs, kmod, linux-apfs-rw module).
 ok=0
 for i in 1 2 3; do
   # shellcheck disable=SC2086

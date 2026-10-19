@@ -17,13 +17,14 @@
 #   root shell. That is what this script adds.
 #
 # WHEN IT CAN RUN
-#   Only after the guest has been RESTORED (companion VM + idevicerestore, see
-#   README) - before that the "root" disk is empty. Applying it needs the
-#   restored APFS System volume mounted READ-WRITE, and the VM must be off.
-#   ChefKiss documents doing that on macOS (hdiutil/diskutil); Linux needs the
-#   out-of-tree linux-apfs-rw driver (experimental writes). Stock Android
-#   kernels do not have an APFS driver, so on the phone the apply step can only
-#   run automatically if your kernel has "apfs" in /proc/filesystems.
+#   Only after the guest has been RESTORED (step 5, restore-ios.sh) - before
+#   that the "root" disk is empty. Applying it needs the restored APFS System
+#   volume mounted READ-WRITE, and the VM must be off. ChefKiss documents doing
+#   that on macOS (hdiutil/diskutil); Linux needs the out-of-tree linux-apfs-rw
+#   driver (experimental writes). Stock Android kernels have no APFS driver, so
+#   on the phone this boots the small USB-host VM from step 5 (Debian kernel +
+#   linux-apfs-rw, companion-vm.sh apfs-run) and applies everything there. If
+#   the phone kernel itself lists "apfs" in /proc/filesystems, that is used.
 #
 # MODES
 #   jailbreak-prep.sh            stage: download the checkra1n core bootstrap
@@ -32,6 +33,8 @@
 #                                try a Linux apply if an APFS rw driver exists.
 #   SYSVOL=/mnt/System jailbreak-prep.sh apply
 #                                apply to an already mounted rw System volume.
+#   SYSVOL=... jailbreak-prep.sh apply-only
+#                                same, without staging (used inside the VM).
 #   jailbreak-prep.sh status     show what is staged / applied.
 #
 # Env: DATA (default /root/InfernoData), WITH_CYDIA=1 also stage Cydia.app,
@@ -93,7 +96,7 @@ stage() {
   chmod +x "$JB/patch-launchd.py" 2>/dev/null || true
 
   if [ "${SKIP_FS_PATCHES:-0}" != "1" ]; then
-    if [ ! -x "$JB/inferno_fs_patcher" ]; then
+    if [ ! -x "$JB/inferno_fs_patcher" ] && [ ! -x /opt/inferno-restore/bin/inferno_fs_patcher ]; then
       log "building InfernoFSPatcher (dyld cache patch for software rendering)"
       if command -v git >/dev/null && command -v g++ >/dev/null; then
         rm -rf "$JB/InfernoFSPatcher"
@@ -159,9 +162,11 @@ apply_to() {
   [ -s "$JB/strap.tar.lzma" ] || stage
 
   if [ "${SKIP_FS_PATCHES:-0}" != "1" ] && [ ! -e "$sys/$MARK_FS" ]; then
-    [ -x "$JB/inferno_fs_patcher" ] || die "inferno_fs_patcher not built (see stage output), or set SKIP_FS_PATCHES=1"
+    local fsp="$JB/inferno_fs_patcher"
+    [ -x "$fsp" ] || fsp=/opt/inferno-restore/bin/inferno_fs_patcher
+    [ -x "$fsp" ] || die "inferno_fs_patcher not built (see stage output), or set SKIP_FS_PATCHES=1"
     log "patching dyld shared cache (software rendering)"
-    "$JB/inferno_fs_patcher" "$sys/$DYLD_REL" || die "InfernoFSPatcher failed"
+    "$fsp" "$sys/$DYLD_REL" || die "InfernoFSPatcher failed"
     touch "$sys/$MARK_FS"
   fi
 
@@ -219,6 +224,30 @@ try_linux_apply() {
   return $rc
 }
 
+# Phone path: the USB-host VM from step 5 has linux-apfs-rw.
+try_companion_apply() {
+  [ -f "$DATA/RESTORED" ] || { warn "the guest is not restored yet - run step 5 'Restore iOS (automatic)' first"; return 1; }
+  [ -s /opt/inferno-restore/companion/initrd.img ] && [ -f "$HERE/companion-vm.sh" ] \
+    || { warn "USB-host VM not built (step 5 builds it)"; return 1; }
+  if pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null 2>&1; then
+    warn "an emulator is running - power the VM off first"; return 1
+  fi
+  if [ ! -f "$DATA/root.pre-jailbreak" ]; then
+    local need avail
+    need=$(du -k "$DATA/root" | awk '{print $1}'); avail=$(df -Pk "$DATA" | awk 'NR==2{print $4}')
+    if [ "$avail" -gt $((need + 2097152)) ]; then
+      log "backing up root disk (sparse, $((need / 1024)) MB) to root.pre-jailbreak"
+      cp --sparse=always "$DATA/root" "$DATA/root.pre-jailbreak" || { warn "backup failed"; return 1; }
+    else
+      warn "not enough free space for a root.pre-jailbreak backup - continuing without one"
+    fi
+  fi
+  cp -f "$HERE/jailbreak-prep.sh" "$JB/jailbreak-prep.sh"
+  cp -f "$HERE/patch-launchd.py" "$JB/patch-launchd.py" 2>/dev/null || true
+  log "booting the USB-host VM to write the bootstrap onto the System volume (a few minutes)"
+  DATA="$DATA" bash "$HERE/companion-vm.sh" apfs-run "bash $JB/jailbreak-prep.sh apply-only"
+}
+
 status() {
   echo "staged bootstrap : $( [ -s "$JB/strap.tar.lzma" ] && echo yes || echo no )"
   echo "fs patcher built : $( [ -x "$JB/inferno_fs_patcher" ] && echo yes || echo no )"
@@ -232,7 +261,9 @@ case "${1:-stage}" in
     stage
     if [ -f "$DATA/JAILBREAK_APPLIED" ]; then
       log "already applied ($(cat "$DATA/JAILBREAK_APPLIED"))"
-    elif try_linux_apply; then
+    elif grep -qw apfs /proc/filesystems 2>/dev/null && try_linux_apply; then
+      :
+    elif try_companion_apply; then
       :
     else
       warn "jailbreak bootstrap STAGED but not applied (see messages above)."
@@ -241,6 +272,9 @@ case "${1:-stage}" in
   apply)
     [ -n "${SYSVOL:-}" ] || die "set SYSVOL=/path/to/mounted/System"
     stage; apply_to "$SYSVOL"; status ;;
+  apply-only)
+    [ -n "${SYSVOL:-}" ] || die "set SYSVOL=/path/to/mounted/System"
+    apply_to "$SYSVOL" ;;
   status) status ;;
-  *) die "usage: $0 [stage|apply|status]" ;;
+  *) die "usage: $0 [stage|apply|apply-only|status]" ;;
 esac

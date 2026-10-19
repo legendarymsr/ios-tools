@@ -16,6 +16,10 @@
 # If run.env exists (written by download-and-configure.sh), it is sourced and
 # supplies KERNEL/DTB/TRUSTCACHE/TICKET/SEPFW/SEPROM/RAMDISK automatically.
 # Otherwise defaults match iOS 14.0 beta 5 filenames.
+#
+# Restore: step 5 (restore-ios.sh) runs this with RESTORE_MODE=1 and the USB
+# connection options, and marks the disk RESTORED when done; after that a
+# plain run boots iOS normally.
 set -eu
 QEMU="${QEMU:-/root/Inferno/build/qemu-system-aarch64}"
 DATA="${DATA:-$PWD}"
@@ -50,24 +54,57 @@ done
 # ChefKiss troubleshooting: "at24c-eeprom: Backing file size 65536 != 2048"
 [ -f "$DATA/sep_nvram" ] && truncate -c -s 64K "$DATA/sep_nvram" 2>/dev/null || true
 
-# Restore ramdisk only while the root disk is still blank (or RESTORE_MODE=1).
-# Booting a restored disk with the Erase ramdisk would just start another
-# restore; booting a blank disk without it panics ("cannot find IOAESAccelerator").
+# Which boot: RESTORE_MODE=1 forces the restore ramdisk (used by
+# restore-ios.sh), RESTORE_MODE=0 forces a normal boot. "auto" (default) boots
+# normally once step 5 (restore-ios.sh) has marked the disk RESTORED, and
+# refuses to boot a blank or half-restored disk (booting a blank disk without
+# the ramdisk panics, and booting the ramdisk without idevicerestore does
+# nothing useful).
 root_blank() {
   [ -f "$DATA/root" ] || return 0
   [ "$(head -c 1048576 "$DATA/root" | tr -d '\000' | wc -c)" = "0" ]
 }
 INITRD=""
-if [ "${RESTORE_MODE:-auto}" = "1" ] || { [ "${RESTORE_MODE:-auto}" = "auto" ] && root_blank; }; then
+MODE="${RESTORE_MODE:-auto}"
+if [ "$MODE" = "auto" ]; then
+  if [ -f "$DATA/RESTORED" ]; then
+    MODE=0
+  elif root_blank; then
+    echo "[ERROR] the iOS disk is blank: run step 5 'Restore iOS (automatic)' first"
+    echo "        (RESTORE_MODE=1 boots the restore ramdisk by hand)"
+    exit 1
+  else
+    st=$(cat "$DATA/restore/state" 2>/dev/null || echo unknown)
+    if [ "$st" = "unknown" ]; then
+      echo "[*] root disk has data but no RESTORED marker (restored by hand?): normal boot"
+      MODE=0
+    else
+      echo "[ERROR] the restore did not finish (state: $st) - run step 5 'Restore iOS (automatic)' again"
+      echo "        (RESTORE_MODE=0 boots it anyway)"
+      exit 1
+    fi
+  fi
+fi
+if [ "$MODE" = "1" ]; then
   if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
     INITRD="-initrd $RAMDISK"
-    echo "[*] root disk is blank: booting the restore ramdisk $(basename "$RAMDISK") (start idevicerestore from the companion VM)"
+    echo "[*] restore mode: booting the restore ramdisk $(basename "$RAMDISK")"
   else
-    echo "[!] root disk is blank and no restore ramdisk found - re-run step 4"
+    echo "[ERROR] restore mode but no restore ramdisk found (RAMDISK in run.env) - re-run step 4"
+    exit 1
   fi
 else
-  echo "[*] root disk has data: normal boot (RESTORE_MODE=1 forces the restore ramdisk)"
+  echo "[*] normal boot (restored disk; the first boot finishes data migration and is slow)"
 fi
+
+# USB: the emulated iPhone's USB port connects to a USB-host VM
+# (companion-vm.sh / ChefKiss companion VM). restore-ios.sh sets
+# USB_CONN_TYPE=unix USB_CONN_ADDR=<socket>; otherwise Inferno's default
+# (UNIX socket /tmp/InfernoUSBRemote) is used.
+USBOPT=""
+[ -n "${USB_CONN_TYPE:-}" ] && USBOPT="$USBOPT,usb-conn-type=$USB_CONN_TYPE"
+[ -n "${USB_CONN_ADDR:-}" ] && USBOPT="$USBOPT,usb-conn-addr=$USB_CONN_ADDR"
+[ -n "${USB_CONN_PORT:-}" ] && USBOPT="$USBOPT,usb-conn-port=$USB_CONN_PORT"
 
 # --- Accel selection ----------------------------------------------------------
 # Probe host KVM for logging. Force TCG for t8030 regardless (see header).
@@ -100,10 +137,10 @@ echo "[*] boot-args: $BOOTARGS"
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 exec "$QEMU" \
   -accel "$ACCEL" \
-  -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true \
+  -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true$USBOPT \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "$BOOTARGS" \
-  -smp "${SMP:-6}" -m "${MEM:-4G}" -serial mon:stdio \
+  -smp "${SMP:-6}" -m "${MEM:-4G}" ${SERIAL_QEMU:--serial mon:stdio} \
   ${DISPLAY_QEMU:--display vnc=127.0.0.1:0} \
   $INITRD \
   -drive file="$DATA/sep_nvram,if=pflash,format=raw" \

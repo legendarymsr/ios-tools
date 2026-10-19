@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.1.8.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.2.0.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -33,6 +33,78 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   DesktopSize so guest resolution changes are followed. Written in plain Java,
   no extra libraries.
 
+## Automatic restore (v1.2.0, step 5)
+
+A blank Inferno disk has to be restored with `idevicerestore` before iOS
+boots. ChefKiss does that from a separate **companion VM**: the emulated
+iPhone's USB port is a socket that only another QEMU's `usb-tcp-remote`
+device can plug into ([Companion VM Setup](https://chefkiss.dev/guides/inferno/companion-setup/)),
+and that VM runs `usbmuxd` + `idevicerestore`. Then the restored System volume
+gets the [Filesystem Patches](https://chefkiss.dev/guides/inferno/fs-patches/),
+which the guide does on macOS. Step 5 **Restore iOS (automatic)** does all of
+it on the phone:
+
+1. **Tools (first run only, ~10-30 min).** `build-restore-tools.sh` builds
+   into `/opt/inferno-restore` at pinned commits: libplist,
+   libimobiledevice-glue, libusbmuxd, libtatsu, libimobiledevice, libirecovery,
+   usbmuxd, and idevicerestore with ChefKiss's
+   [`idevicerestore.patch`](https://chefkiss.dev/Extras/Inferno/idevicerestore.patch)
+   (`idevicerestore-inferno.patch`). It also builds libusb 1.0.29 without udev,
+   InfernoFSPatcher, and the USB-host VM: Debian's own `linux-image-arm64`
+   kernel (via apt), [linux-apfs-rw](https://github.com/linux-apfs/linux-apfs-rw)
+   built against the matching `linux-headers`, and a busybox initramfs
+   (`companion-init.sh`). Inferno itself is **not** rebuilt; the build from step
+   3 already has the `virt` machine, `usb-ehci`, `usb-tcp-remote`, 9p and slirp.
+2. **USB-host VM** (`companion-vm.sh usbmux`). It's a small aarch64 `virt` VM
+   (TCG, 512 MB) running the same Inferno `qemu-system-aarch64`, with
+   `-device usb-ehci -device usb-tcp-remote,conn-type=unix,conn-addr=InfernoData/restore/usb.sock`.
+   Its userland is this Debian chroot, shared read-only over 9p, so nothing
+   else is downloaded. It only runs `usbmuxd -S 0.0.0.0:27015`, forwarded to
+   `127.0.0.1:27015` in the chroot.
+3. **Restore ramdisk.** It boots `run-t8030.sh` with `RESTORE_MODE=1` and
+   `usb-conn-type=unix,usb-conn-addr=…` (the same flags as ChefKiss's
+   `-M t8030,…,usb-conn-*`). The VNC screen shows the restore, so you can
+   watch with **Open VNC viewer**.
+4. **idevicerestore** runs natively in the chroot. It talks to the VM's
+   usbmuxd via `USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015`:
+   `idevicerestore --erase --restore-mode --no-input -i 0x1122334455667788 -T root_ticket.der <ipsw>`
+   (the guide's command plus `--no-input`). The OS image is streamed straight
+   from the downloaded `.ipsw`; it's stored uncompressed in that zip, so
+   nothing is extracted. Progress is logged every 5 %. The guest closes itself
+   when restore stage 1 is done.
+5. **Filesystem patches** (`companion-vm.sh apfs-run`). The USB-host VM boots
+   again with `root` attached and mounts the System volume read-write with
+   linux-apfs-rw. It runs InfernoFSPatcher on `dyld_shared_cache_arm64e`, then
+   `patch-launchd.py --no-bash` sets `Disabled` on vmd, CommCenter*, and
+   locationd. The original `launchd.plist` is saved to `InfernoData/restore/`.
+6. Writes `InfernoData/RESTORED`. **Boot iOS** now boots normally. The first
+   boot runs data migration (restore stage 2) and can take a long time under
+   TCG before the setup screen. Don't set a passcode, don't enable location
+   services, and never use "Erase All Content and Settings" (ChefKiss).
+
+Resuming and retrying:
+- The work runs detached inside the chroot (`setsid`). Closing the app doesn't
+  stop it, and tapping step 5 again re-attaches to `InfernoData/restore/restore.log`.
+- On the first run, all nine Inferno disks are backed up (sparse) to
+  `InfernoData/restore/blank/`. If stage 1 fails or gets interrupted, the next
+  tap resets the disks from that backup and restores again. A failed FS-patch
+  stage is retried on its own. `FORCE_RESTORE=1` wipes a restored guest back to
+  blank and restores again.
+- Errors print one `[ERROR] …` line plus the tail of the relevant log
+  (`restore/inferno.log`, `restore/ios-serial.log`, `restore/idevicerestore.log.raw`,
+  `companion/console.log`, `companion/job.log`).
+- Inside the chroot: `bash /root/restore-ios.sh status | stop`.
+
+Limits:
+- Under TCG on a phone, the restore ramdisk can take 10-40+ min to come up and
+  the restore itself can take hours. The step waits up to 3 h for the device
+  (`DEVICE_TIMEOUT`).
+- linux-apfs-rw write support is marked experimental upstream. If the FS-patch
+  stage fails, the restore itself is still on disk. Do the patches on a Mac
+  (fs-patches guide), then re-run step 5 with `SKIP_FS_PATCHES=1`.
+- Not tested end to end here: the build host has no phone and no 5.5 GB IPSW
+  restore. See "Verified vs not".
+
 ## Reality check (important)
 
 - The guest CPU is an **Apple A13**, so there is **no KVM** — it's pure **TCG
@@ -42,7 +114,11 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
-- **v1.1.8 step 5 VNC fix:** QEMU 10 rejected `-display vnc=…,show-cursor=on` (`Invalid parameter 'show-cursor'`). Default is now `-display vnc=127.0.0.1:0`.
+- **v1.2.0:** new step 5 **Restore iOS (automatic)** (see above). Steps after it
+  are renumbered: 6 Boot, 7 Status, 8 Jailbreak. Boot now refuses a blank or
+  half-restored disk and tells you to run step 5. Step 8 writes the jailbreak
+  bootstrap with the same USB-host VM (linux-apfs-rw), so no Mac is needed.
+- **v1.1.8 Boot VNC fix:** QEMU 10 rejected `-display vnc=…,show-cursor=on` (`Invalid parameter 'show-cursor'`). Default is now `-display vnc=127.0.0.1:0`.
 - **v1.1.7 step 3/4 fixes:**
   - Step 3 never produced `qemu-img` / `qemu-system-aarch64`. Inferno's
     `--enable-nettle` needs nettle >= 3.10; step 2 builds 3.10.2, but nettle
@@ -113,7 +189,7 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.1.8.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.0.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -144,11 +220,16 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
      `sep-firmware.n104.RELEASE.new.img4`
    - auto-detects kernel / DeviceTree / trustcache / ramdisk filenames
    - writes `run.env` + `READY` so Boot just works
-5. **Boot iOS (t8030)** — runs `run-t8030.sh` (VNC on `127.0.0.1:5900`); the
-   built-in viewer opens on its own once the VNC port is up.
-6. **Show READY status** — prints what was configured / what's still missing,
-   plus jailbreak status.
-7. **Jailbreak bootstrap (after restore)** — see [Jailbreak](#jailbreak-what-you-get-honestly).
+5. **Restore iOS (automatic)**: builds the restore tools on first run, then
+   restores the IPSW onto the blank disk and applies the filesystem patches.
+   See [Automatic restore](#automatic-restore-v120-step-5). Long; tap again to
+   re-attach.
+6. **Boot iOS (t8030)**: runs `run-t8030.sh` (VNC on `127.0.0.1:5900`). The
+   built-in viewer opens by itself once the VNC port is up. The first boot
+   after the restore finishes data migration.
+7. **Show READY / restore status**: shows what's configured, what's still
+   missing, the restore state, and the jailbreak status.
+8. **Jailbreak bootstrap (after restore)**: see [Jailbreak](#jailbreak-what-you-get-honestly).
 
 ### Apple IPSW URL used
 
@@ -171,9 +252,18 @@ RESTORE_MODE=1 bash /root/run-t8030.sh   # force the restore ramdisk
 RESTORE_MODE=0 bash /root/run-t8030.sh   # force a normal boot
 ```
 
-A full IPSW restore still needs the companion VM + `idevicerestore` (see the
-upstream "Running & Restoring" guide). First boot without a prior restore may
-not reach SpringBoard — that is expected.
+# restore (what step 5 does):
+DATA=/root/InfernoData bash /root/restore-ios.sh          # start / re-attach
+DATA=/root/InfernoData bash /root/restore-ios.sh status
+DATA=/root/InfernoData bash /root/restore-ios.sh stop
+```
+
+```sh
+# the USB-host VM by hand
+DATA=/root/InfernoData bash /root/companion-vm.sh usbmux   # usbmuxd on 127.0.0.1:27015
+USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 /opt/inferno-restore/bin/idevice_id -l
+DATA=/root/InfernoData bash /root/companion-vm.sh apfs-run 'ls "$SYSVOL"'
+DATA=/root/InfernoData bash /root/companion-vm.sh stop
 
 ## Jailbreak (what you get, honestly)
 
@@ -184,7 +274,7 @@ AMFI trust-cache bypass (every binary counts as trusted), the code-signature and
 update snapshot being disabled. So unsigned binaries already run, and there's no
 `amfi=` boot-arg to add.
 
-**Userland: added by step 7 / `jailbreak-prep.sh`.** This follows ChefKiss's
+**Userland: added by step 8 / `jailbreak-prep.sh`.** This follows ChefKiss's
 documented [Filesystem Patches](https://chefkiss.dev/guides/inferno/fs-patches/)
 and [Jailbreak Utility Bootstrap](https://chefkiss.dev/guides/inferno-post-setup/jailbreak-bootstrap/)
 pages:
@@ -204,19 +294,18 @@ pages:
   straight into the kernel with no SecureROM, iBoot or DFU, so there's nothing
   for checkm8 to hit (Inferno maintainer, Discussion #162). No Sileo/Dopamine-style
   on-device jailbreak app is involved.
-- **It doesn't happen on first boot by itself.** The bootstrap has to be written
-  onto the *restored* APFS System volume. The `root` disk stays empty until a
-  restore through the companion VM + `idevicerestore`, and that restore isn't
-  automated here. ChefKiss documents writing that volume only from macOS
-  (`hdiutil`/`diskutil`). On Linux it needs the out-of-tree linux-apfs-rw
-  driver, which stock Android kernels don't have. So:
-  - if your kernel lists `apfs` in `/proc/filesystems`, step 7 mounts the System
-    volume read-write and applies everything (it makes a sparse backup
-    `root.pre-jailbreak` first). This path is untested.
-  - otherwise step 7 stages everything plus `jailbreak/apply-on-mac.sh`. Copy
-    `root` and `jailbreak/` to a Mac, run
-    `sudo ./apply-on-mac.sh /path/to/root`, copy `root` back, then
-    `touch /root/InfernoData/JAILBREAK_APPLIED`.
+- **It isn't there on first boot by itself.** The bootstrap has to be written
+  onto the *restored* APFS System volume, so run step 5 first. ChefKiss
+  documents writing that volume only from macOS (`hdiutil`/`diskutil`). On
+  Linux it needs the out-of-tree linux-apfs-rw driver, which stock Android
+  kernels don't have. So:
+  - step 8 boots the USB-host VM from step 5 (Debian kernel + linux-apfs-rw)
+    and applies everything there. It makes a sparse backup
+    `root.pre-jailbreak` first if there's room. If your phone kernel lists
+    `apfs` in `/proc/filesystems`, that is used instead.
+  - fallback: step 8 also stages `jailbreak/apply-on-mac.sh`. Copy `root` and
+    `jailbreak/` to a Mac, run `sudo ./apply-on-mac.sh /path/to/root`, copy
+    `root` back, then `touch /root/InfernoData/JAILBREAK_APPLIED`.
 - Not tested on a real restored disk (none on the build host).
 
 ## Scripts
@@ -235,7 +324,17 @@ pages:
   end of Download & Configure (stage only unless an APFS rw driver exists).
 - `patch-launchd.py` — idempotent launchd.plist editor (Linux/macOS, stdlib).
 - `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line;
-  sources `run.env` when present.
+  sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
+  `SERIAL_QEMU` overrides.
+- `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in
+  `InfernoData/restore/state`).
+- `build-restore-tools.sh` — **v1.2.0** builds `/opt/inferno-restore`
+  (libimobiledevice stack, idevicerestore + patch, usbmuxd, no-udev libusb,
+  InfernoFSPatcher, USB-host VM kernel/initramfs + apfs.ko).
+- `companion-vm.sh` / `companion-init.sh` — **v1.2.0** the USB-host VM
+  (`usbmux` | `apfs-run CMD` | `stop` | `status`) and its initramfs `/init`.
+- `idevicerestore-inferno.patch` — ChefKiss's idevicerestore patch (maps the
+  emulated `…DEV` hardware model to `…AP`).
 
 ## Verified vs not
 
@@ -246,3 +345,18 @@ pages:
 - **Not** verified: the on-device Inferno build, a live 5.5 GB IPSW download on a
   phone, img4 decrypt/rewrap of SEP firmware, and an actual iOS boot (no phone
   on the build host). Treat on-device steps as "should work", not "tested here".
+- v1.2.0 restore, verified on the build host: against the Inferno source at
+  `cc4302a`, `usb-tcp-remote` (`CONFIG_USB_TCP`, default y) and the `virt`
+  machine are in the aarch64 build, and step 3 already enables slirp and
+  virtfs. In the pinned sources, `usbmuxd -S ADDR:PORT`, libusbmuxd's
+  `USBMUXD_SOCKET_ADDRESS`, and idevicerestore's `--restore-mode/--no-input/
+  --plain-progress/-T/--cache-path` options all exist, and ChefKiss's patch
+  applies to the pinned idevicerestore. All the bookworm arm64 package names
+  exist. Debian 6.1.0-50-arm64 builds virtio/9p/EHCI as modules with 4 KiB
+  pages. The OS image in the 18A5351d IPSW is stored uncompressed (zip
+  central directory read from Apple's CDN), so it is never extracted. The
+  libusb tarball sha256 is checked. The scripts pass `bash -n`.
+- v1.2.0 restore, **not** verified: the full tool build, the USB-host VM
+  boot, usbmuxd seeing the emulated iPhone, the idevicerestore run itself,
+  and linux-apfs-rw writes to a real iOS System volume. The first run on the
+  phone is the real test, so send the step 5 log if it fails.

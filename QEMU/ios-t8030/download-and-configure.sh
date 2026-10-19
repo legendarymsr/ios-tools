@@ -172,7 +172,8 @@ if [ ! -f "$DATA/Restore/BuildManifest.plist" ]; then
   ( cd "$DATA/Restore" && unzip -o "$IPSW" ) || die "IPSW extract failed"
 fi
 
-# Drop the largest .dmg (main OS image) — only needed by the companion restore VM.
+# Drop the extracted copy of the largest .dmg (main OS image): the restore step
+# (restore-ios.sh) streams it straight from the .ipsw, which is kept.
 if [ -d "$DATA/Restore" ]; then
   big=$(find "$DATA/Restore" -maxdepth 1 -type f -name '*.dmg' -printf '%s %p\n' 2>/dev/null | sort -nr | head -1 | awk '{print $2}')
   if [ -n "${big:-}" ]; then
@@ -427,7 +428,9 @@ READY="$DATA/READY"
 cat > "$DATA/NEXT_STEPS.txt" <<EOF
 Inferno data dir: $DATA
 
-Boot with the app's "Boot iOS (t8030)" button, or inside the chroot:
+Next: the app's "5. Restore iOS (automatic)" button restores the IPSW onto the
+blank disk (inside the chroot: DATA=$DATA bash /root/restore-ios.sh). Then boot
+with "6. Boot iOS (t8030)", or inside the chroot:
   cd $DATA && bash /root/run-t8030.sh
 
 Display is a VNC server on 127.0.0.1:5900 — connect with a VNC viewer on the phone.
@@ -438,8 +441,7 @@ If sep-firmware…new.img4 is MISSING:
      $KEYS_URL
   3. Follow https://chefkiss.dev/guides/inferno/file-setup/
 
-A full restore still needs the companion VM + idevicerestore (upstream guide).
-First boot without a prior restore may not reach SpringBoard; that is expected.
+Keep the downloaded .ipsw: the restore step streams the OS image from it.
 EOF
 
 # ---------- 9. jailbreak bootstrap (stage + apply when possible) ----------
@@ -461,9 +463,10 @@ Jailbreak:
   Inferno already patches AMFI / code signing in the kernel on every boot.
   The userland bootstrap (bash, apt, ...) + root shell on the serial console is
   staged in $DATA/jailbreak. It is written onto the iOS System volume AFTER the
-  guest has been restored (companion VM + idevicerestore):
-    - phone kernel with an APFS rw driver: re-run  bash /root/jailbreak-prep.sh
-    - otherwise on a Mac: sudo $DATA/jailbreak/apply-on-mac.sh /path/to/root
+  guest has been restored (step 5):
+    - app step "8. Jailbreak bootstrap": writes it with linux-apfs-rw inside the
+      small USB-host VM from step 5 (or the phone kernel's APFS driver, if any)
+    - or on a Mac: sudo $DATA/jailbreak/apply-on-mac.sh /path/to/root
       then copy root back and  touch $DATA/JAILBREAK_APPLIED
   run-t8030.sh then adds launchd_unsecure_cache=1 automatically.
   palera1n/checkra1n themselves cannot run in the emulator (no SecureROM/iBoot).
@@ -473,7 +476,7 @@ log "DONE. Status:"
 cat "$READY"
 echo
 if [ -f "$SEPFW_OUT" ] && [ -f "$DATA/root_ticket.der" ] && [ -n "${KERNEL:-}" ]; then
-  log "Ready to boot. Use the Boot button (or ./run-t8030.sh)."
+  log "Configured. Next: step 5 'Restore iOS (automatic)', then Boot."
   exit 0
 else
   warn "Configured with gaps — read $DATA/NEXT_STEPS.txt"
