@@ -53,7 +53,14 @@ available() {
 }
 
 ensure_bridge() {
-  if [ -x "$BRIDGE" ]; then return 0; fi
+  # Rebuild when the shipped source is newer than the binary (app updates).
+  if [ -x "$BRIDGE" ]; then
+    local s
+    for s in "$HERE/vhci-bridge/bridge.c" "$HERE/vhci-bridge.c"; do
+      [ -f "$s" ] && [ "$s" -nt "$BRIDGE" ] && { log "vhci-bridge source newer than binary - rebuilding"; rm -f "$BRIDGE"; break; }
+    done
+    [ -x "$BRIDGE" ] && return 0
+  fi
   local srcc=""
   if [ -f "$HERE/vhci-bridge/bridge.c" ]; then srcc="$HERE/vhci-bridge/bridge.c"
   elif [ -f "$HERE/vhci-bridge.c" ]; then srcc="$HERE/vhci-bridge.c"

@@ -37,6 +37,12 @@
 #define DEFAULT_DEVID ((1u << 16) | 1u)
 #endif
 #define NAK_RETRY_MS 2
+#define NAK_RETRY_MAX_MS 16
+/* dwc3 gadget NAKs SETUP until iOS handles a bus-reset event and arms EP0.
+ * EHCI+dev-tcp-remote forwards every port reset (handle_reset); VHCI keeps
+ * port resets in-kernel, so we synthesize TCP_USB_RESET per enumeration. */
+#define RESET_SETTLE_MS 100
+#define SETUP_NAK_RERESET_MS 1000
 #define MAX_XFER 65536
 
 static const char *g_listen_path = DEFAULT_SOCK;
@@ -132,6 +138,8 @@ static int g_vhci_fd = -1;
 static int g_vhci_port = -1;
 static volatile int g_stop;
 static uint64_t g_next_id = 1;
+static bool g_retrying; /* quiet TX log for NAK re-polls */
+static struct timespec g_last_reset;
 
 static bool inf_send_req(InfernoLink *L, int pid, uint8_t ep, uint64_t id,
                          const void *data, uint16_t len, uint8_t short_not_ok)
@@ -146,8 +154,9 @@ static bool inf_send_req(InfernoLink *L, int pid, uint8_t ep, uint64_t id,
     req.short_not_ok = short_not_ok;
     req.length = len;
 
-    DBG("TX REQUEST addr=%u pid=0x%x ep=%u id=%" PRIu64 " len=%u",
-        req.addr, pid, ep, id, len);
+    if (!g_retrying)
+        DBG("TX REQUEST addr=%u pid=0x%x ep=%u id=%" PRIu64 " len=%u",
+            req.addr, pid, ep, id, len);
 
     pthread_mutex_lock(&L->wlock);
     bool ok = write_full(L->fd, &hdr, sizeof(hdr))
@@ -174,6 +183,7 @@ static bool inf_send_reset(InfernoLink *L)
 {
     tcp_usb_header_t hdr = { .type = TCP_USB_RESET };
     L->addr = 0;
+    clock_gettime(CLOCK_MONOTONIC, &g_last_reset);
     LOG("TX RESET (bus reset toward iOS)");
     pthread_mutex_lock(&L->wlock);
     bool ok = write_full(L->fd, &hdr, sizeof(hdr));
@@ -202,13 +212,29 @@ typedef struct Pending {
     int32_t actual;
     uint64_t gen; /* bumped on cancel so NAK retry won't use freed state */
     struct timespec nak_due; /* zero = not waiting for NAK retry */
+    struct timespec nak_start; /* first NAK of the current stage */
+    unsigned nak_count;
     struct Pending *next;
 } Pending;
 
 static pthread_mutex_t g_plock = PTHREAD_MUTEX_INITIALIZER;
 static Pending *g_pending;
 static uint64_t g_gen = 1;
-static bool g_did_port_reset; /* one bus reset before first enumerate */
+static bool g_did_port_reset; /* legacy flag; see g_need_reset */
+static bool g_need_reset = true;      /* next addr-0 SETUP gets a bus reset first */
+static uint64_t g_nak_total;
+
+static long ms_since(const struct timespec *a)
+{
+    struct timespec n; clock_gettime(CLOCK_MONOTONIC, &n);
+    return (n.tv_sec - a->tv_sec) * 1000L + (n.tv_nsec - a->tv_nsec) / 1000000L;
+}
+static void due_in_ms(struct timespec *d, long ms)
+{
+    clock_gettime(CLOCK_MONOTONIC, d);
+    d->tv_nsec += ms * 1000000L;
+    while (d->tv_nsec >= 1000000000L) { d->tv_sec++; d->tv_nsec -= 1000000000L; }
+}
 
 static Pending *pend_find_seq(uint32_t seq)
 {
@@ -375,9 +401,13 @@ static void kick_pending(Pending *p)
     /* One bus reset before the first URB, like EHCI port reset on plug-in.
      * Do NOT reset at accept-time — that raced the restore ramdisk and
      * could reboot the guest (-no-reboot → QEMU exit). */
-    if (!g_did_port_reset) {
-        g_did_port_reset = true;
+    g_did_port_reset = true;
+    if (p->is_ctrl && p->stage == ST_SETUP && g_link.addr == 0 && g_need_reset) {
+        g_need_reset = false;
         inf_send_reset(&g_link);
+        /* let iOS take the reset/connect-done events and arm EP0 */
+        due_in_ms(&p->nak_due, RESET_SETTLE_MS);
+        return;
     }
     if (!send_stage(p)) {
         LOG("send_stage failed seq=%u", p->seqnum);
@@ -385,7 +415,7 @@ static void kick_pending(Pending *p)
     }
 }
 
-static void schedule_nak_retry(Pending *p)
+static __attribute__((unused)) void schedule_nak_retry(Pending *p)
 {
     clock_gettime(CLOCK_MONOTONIC, &p->nak_due);
     p->nak_due.tv_nsec += NAK_RETRY_MS * 1000000L;
@@ -398,8 +428,9 @@ static void schedule_nak_retry(Pending *p)
 static void on_inferno_response(const tcp_usb_response_header *r, void *payload)
 {
     int st = (int32_t)r->status;
-    DBG("RX RESPONSE addr=%u pid=0x%x ep=%u id=%" PRIu64 " status=%d len=%u",
-        r->addr, r->pid, r->ep, r->id, st, r->length);
+    if (st != USB_RET_NAK)
+        DBG("RX RESPONSE addr=%u pid=0x%x ep=%u id=%" PRIu64 " status=%d len=%u",
+            r->addr, r->pid, r->ep, r->id, st, r->length);
 
     pthread_mutex_lock(&g_plock);
     Pending *p = pend_find_inf(r->id, r->pid, r->ep);
@@ -423,7 +454,23 @@ static void on_inferno_response(const tcp_usb_response_header *r, void *payload)
         return;
     }
     if (st == USB_RET_NAK) {
-        schedule_nak_retry(p);
+        g_nak_total++;
+        if (p->nak_count++ == 0) clock_gettime(CLOCK_MONOTONIC, &p->nak_start);
+        if (p->nak_count == 1 || p->nak_count % 500 == 0)
+            LOG("NAK pid=0x%x ep=%u addr=%u (x%u, %ld ms)", r->pid, r->ep, g_link.addr,
+                p->nak_count, ms_since(&p->nak_start));
+        if (p->is_ctrl && p->stage == ST_SETUP && g_link.addr == 0 &&
+            ms_since(&p->nak_start) >= SETUP_NAK_RERESET_MS &&
+            ms_since(&g_last_reset) >= SETUP_NAK_RERESET_MS) {
+            LOG("SETUP to addr 0 NAKed %ld ms - iOS EP0 not armed; re-sending bus reset",
+                ms_since(&p->nak_start));
+            inf_send_reset(&g_link);
+            due_in_ms(&p->nak_due, RESET_SETTLE_MS);
+        } else {
+            long d = NAK_RETRY_MS << (p->nak_count > 3 ? 3 : p->nak_count);
+            if (d > NAK_RETRY_MAX_MS) d = NAK_RETRY_MAX_MS;
+            due_in_ms(&p->nak_due, d);
+        }
         pthread_mutex_unlock(&g_plock);
         free(payload);
         return;
@@ -442,6 +489,8 @@ static void on_inferno_response(const tcp_usb_response_header *r, void *payload)
 
     /* SUCCESS — advance control stages or finish */
     memset(&p->nak_due, 0, sizeof(p->nak_due));
+    if (p->nak_count) LOG("pid=0x%x ep=%u OK after %u NAKs", r->pid, r->ep, p->nak_count);
+    p->nak_count = 0;
     if (p->is_ctrl) {
         if (p->stage == ST_SETUP) {
             p->stage = (ctrl_wlen(p) > 0) ? ST_DATA : ST_STATUS;
@@ -492,7 +541,10 @@ static void *nak_thread(void *arg)
                 /* Re-issue the same stage with a fresh id (old one was answered). */
                 uint64_t old = p->inf_id;
                 (void)old;
-                if (!send_stage(p))
+                g_retrying = p->nak_count > 0;
+                bool ok = send_stage(p);
+                g_retrying = false;
+                if (!ok)
                     complete_pending(p, USB_RET_IOERROR);
             }
         }
@@ -623,6 +675,10 @@ static void handle_cmd_unlink(struct usbip_header *h)
     int found = 0;
     pthread_mutex_lock(&g_plock);
     Pending *p = pend_find_seq(victim);
+    if (p && p->is_ctrl && g_link.addr == 0) {
+        g_need_reset = true; /* hub timed out; its next try follows a port reset */
+        LOG("UNLINK of ep0 URB at addr 0 (host enumeration timeout) - will bus-reset before next SETUP");
+    }
     if (p) {
         found = 1;
         p->cancelled = true;
@@ -710,6 +766,7 @@ static int run_session(int inf_fd)
 
     g_stop = 0;
     g_did_port_reset = false;
+    g_need_reset = true;
     g_next_id = 1;
     g_link.fd = inf_fd;
     pthread_mutex_init(&g_link.wlock, NULL);

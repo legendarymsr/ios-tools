@@ -76,7 +76,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.4.5: VHCI /dev/bus/usb sync + diagnostics; flat vhci-bridge.c + tar.gz; force re-extract on version bump."
+ui_print "- v1.4.6: VHCI bus-reset per enumeration (fixes SETUP NAK loop); flat vhci-bridge.c + tar.gz; force re-extract on version bump."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
