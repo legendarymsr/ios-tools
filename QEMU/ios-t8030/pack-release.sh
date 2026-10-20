@@ -76,7 +76,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.5.0: iOS network via USB ethernet (reverse tethering through the USB-host VM, slirp DHCP); Power off VM button. Disks and state kept."
+ui_print "- v1.5.1: network boot is opt-in (step 6b); a panic with network on reboots without it. Step 6 = plain boot as before."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."

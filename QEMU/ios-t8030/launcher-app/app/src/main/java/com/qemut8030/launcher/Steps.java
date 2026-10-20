@@ -72,6 +72,10 @@ public final class Steps {
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh "
           + "'cd /root/InfernoData && bash /root/run-t8030.sh'"),
+        new Step("6b. Boot iOS with network (experimental: USB ethernet, may panic iOS 14.0)",
+            SYNC
+          + DETACH + "sh /data/local/enter-debian.sh "
+          + "'cd /root/InfernoData && NET=1 bash /root/run-t8030.sh'"),
         new Step("7. Show READY / restore status",
             "if [ -f /data/local/debian/root/InfernoData/READY ]; then "
           + "echo '--- READY ---'; cat /data/local/debian/root/InfernoData/READY; "

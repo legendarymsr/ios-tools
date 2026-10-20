@@ -142,11 +142,13 @@ fi
 # (usbmux + CDC-NCM ethernet), the NCM link is bridged to the VM's QEMU slirp
 # NIC, and slirp's DHCP gives iOS 10.0.2.20 (gateway 10.0.2.2, DNS 10.0.2.3).
 # Traffic goes out through the phone's own connection; no root network setup.
-# NET=0 boots without USB/network.
+# Opt-in (NET=1, "Boot iOS with network (experimental)"): on iOS 14.0 the
+# mode-3 switch has been seen to panic the guest. If a panic shows up on the
+# serial console while NET=1, the VM is stopped and booted again with NET=0.
 HERE=$(cd "$(dirname "$0")" && pwd)
 PREFIX="${PREFIX:-/opt/inferno-restore}"
 NET_STARTED=0
-if [ "$MODE" != "1" ] && [ "${NET:-1}" = 1 ] && [ -z "${USB_CONN_TYPE:-}" ]; then
+if [ "$MODE" != "1" ] && [ "${NET:-0}" = 1 ] && [ -z "${USB_CONN_TYPE:-}" ]; then
   echo "[net] setting up network for iOS (USB ethernet via the USB-host VM)"
   if ! grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
     echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm + bridge modules) - running build-restore-tools.sh (a few minutes, once)"
@@ -204,7 +206,18 @@ echo "[*] -smp ${SMP:-7} (= $(( ${SMP:-7} - 1 )) A13 cores + 1 SEP core)"
 
 echo "[*] machine: t8030,trustcache=$TRUSTCACHE,ticket=$TICKET,sep-fw=$SEPFW,sep-rom=$SEPROM,kaslr-off=true$USBOPT"
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
+SERLOG="$DATA/serial-boot.log"; : > "$SERLOG"
+PANIC_MARK="$DATA/.net-panic"; rm -f "$PANIC_MARK"
+if [ "$NET_STARTED" = 1 ]; then
+  # panic watchdog: stop the VM on the first iOS panic line
+  ( tail -n0 -F "$SERLOG" 2>/dev/null | while IFS= read -r l; do
+      case "$l" in *"panic(cpu"*|*"wdog panic"*|*"Debugger called"*)
+        printf '%s\n' "$l" >> "$PANIC_MARK"
+        sleep 3; pkill -f 'qemu-system-aarch64.*-M t8030' 2>/dev/null; break ;; esac
+    done ) &
+fi
 rc=0
+set +e
 "$QEMU" -L "$QDATA" \
   -accel "$ACCEL" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true$USBOPT \
@@ -222,10 +235,24 @@ rc=0
   -drive file="$DATA/ctrl_bits",format=raw,if=none,id=ctrl_bits -device nvme-ns,drive=ctrl_bits,bus=nvme-bus.0,nsid=4,nstype=4,logical_block_size=4096,physical_block_size=4096 \
   -drive file="$DATA/nvram",if=none,format=raw,id=nvram     -device apple-nvram,drive=nvram,bus=nvme-bus.0,nsid=5,nstype=5,id=nvram,logical_block_size=4096,physical_block_size=4096 \
   -drive file="$DATA/effaceable",format=raw,if=none,id=effaceable -device nvme-ns,drive=effaceable,bus=nvme-bus.0,nsid=6,nstype=6,logical_block_size=4096,physical_block_size=4096 \
-  -drive file="$DATA/panic_log",format=raw,if=none,id=panic_log -device nvme-ns,drive=panic_log,bus=nvme-bus.0,nsid=7,nstype=8,logical_block_size=4096,physical_block_size=4096 || rc=$?
+  -drive file="$DATA/panic_log",format=raw,if=none,id=panic_log -device nvme-ns,drive=panic_log,bus=nvme-bus.0,nsid=7,nstype=8,logical_block_size=4096,physical_block_size=4096 2>&1 | tee -a "$SERLOG"
+rc=${PIPESTATUS[0]}
+set -e
 if [ "$NET_STARTED" = 1 ]; then
   echo "[net] iOS VM exited ($rc) - stopping the USB-host VM"
   bash "$HERE/companion-vm.sh" stop || true
   kill $(jobs -p) 2>/dev/null || true
+fi
+if [ "$NET_STARTED" = 1 ] && [ -s "$PANIC_MARK" ]; then
+  echo "[net] iOS PANICKED with networking on. Panic line(s):"
+  grep -a -m3 -E 'panic\(cpu|Debugger called' "$SERLOG" | sed 's/^/[net]   /'
+  grep -q 'panic(cpu' "$SERLOG" || sed 's/^/[net]   /' "$PANIC_MARK"
+  cp -f "$SERLOG" "$DATA/serial-net-panic.log"
+  echo "[net] full serial log: $DATA/serial-net-panic.log"
+  echo "[net] cause: USB ethernet mode switch (usbmuxd mode 3) is not stable on this iOS/Inferno build"
+  if [ "${NET_RETRY:-1}" = 1 ]; then
+    echo "[net] booting again WITHOUT network (NET=0)"
+    NET=0 NET_RETRY=0 exec bash "$0" "$@"
+  fi
 fi
 exit $rc
