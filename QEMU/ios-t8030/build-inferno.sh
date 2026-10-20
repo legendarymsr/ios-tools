@@ -191,32 +191,68 @@ PATCH_ID="ios-tools-patches-7"
 #       a request for a missing device/EP gets NODEV instead of closing the
 #       link, every cancel is acked so stale answers are dropped
 #   inferno-dart-error-lock.patch       SEP DART error clear under the lock
-for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch inferno-usb-tcp-remote-async-v1210.patch inferno-usb-tcp-host-retry-v1211.patch inferno-usb-tcp-remote-async-v130.patch inferno-usb-tcp-host-retry-v130.patch; do
-  of="$HERE/$old"
-  # the current version may contain the old one's hunks: never undo an old
-  # patch when its replacement is already applied
-  case "$old" in
-    inferno-usb-tcp-host-retry-*) cur=inferno-usb-tcp-host-retry.patch ;;
-    *) cur=inferno-usb-tcp-remote-async.patch ;;
-  esac
-  git -C "$SRC" apply --reverse --check "$HERE/$cur" >/dev/null 2>&1 && continue
-  if [ -f "$of" ] && git -C "$SRC" apply --reverse --check "$of" >/dev/null 2>&1; then
-    git -C "$SRC" apply --reverse "$of" || die "could not undo the old $old"
-    log "patch $old: removed (superseded)"
+# v1.3.2: no more reverse-applying old patches (a tree left by any earlier
+# version, a partly patched tree or a hand-edited one made that fail). If
+# the current set is not exactly applied, the files the patches touch are
+# put back to pristine $REF (git checkout, or the saved/downloaded pristine
+# copy for a tarball tree) and the whole set is applied fresh. Only these
+# files change, so ninja still rebuilds just them + the relink.
+PATCHES="inferno-usb-tcp-remote-async.patch inferno-usb-tcp-host-retry.patch inferno-dart-error-lock.patch"
+TOUCHED="hw/usb/dev-tcp-remote.c hw/usb/dev-tcp-remote.h hw/usb/hcd-tcp.c hw/arm/apple-silicon/dart.c"
+PRISTINE="$SRC/.ios-tools-pristine/$REF"
+for p in $PATCHES; do [ -f "$HERE/$p" ] || die "$p missing next to $0 (copy the whole payload)"; done
+patches_applied() {
+  local p
+  for p in $PATCHES; do git -C "$SRC" apply --reverse --check "$HERE/$p" >/dev/null 2>&1 || return 1; done
+}
+patches_apply_check() {
+  local p
+  for p in $PATCHES; do git -C "$SRC" apply --check "$HERE/$p" >/dev/null 2>&1 || return 1; done
+}
+restore_pristine() {
+  local f ok=1
+  for f in $TOUCHED; do
+    if [ -f "$PRISTINE/$f" ]; then
+      cp -f "$PRISTINE/$f" "$SRC/$f"
+    elif src_git_ok && git -C "$SRC" cat-file -e "$REF:$f" 2>/dev/null; then
+      git -C "$SRC" checkout -f "$REF" -- "$f" || ok=0
+    else
+      mkdir -p "$(dirname "$PRISTINE/$f")"
+      if retry 3 curl -fsSL -o "$PRISTINE/$f.tmp" "https://raw.githubusercontent.com/ChefKissInc/Inferno/$REF/$f"; then
+        mv -f "$PRISTINE/$f.tmp" "$PRISTINE/$f"; cp -f "$PRISTINE/$f" "$SRC/$f"
+      else
+        rm -f "$PRISTINE/$f.tmp"; ok=0
+      fi
+    fi
+  done
+  [ "$ok" = 1 ]
+}
+save_pristine() {   # only from a known-clean state
+  local f
+  for f in $TOUCHED; do
+    [ -f "$PRISTINE/$f" ] && continue
+    mkdir -p "$(dirname "$PRISTINE/$f")"; cp -f "$SRC/$f" "$PRISTINE/$f"
+  done
+}
+if patches_applied; then
+  log "ios-tools patches: already applied"
+else
+  if ! patches_apply_check; then
+    log "ios-tools patches: tree has older/partial patches - resetting $TOUCHED to pristine ${REF:0:9}"
+    restore_pristine || die "could not restore pristine copies of the patched files (network?) - re-run, or CLEAN_SRC=1"
   fi
-done
-for p in inferno-usb-tcp-remote-async.patch inferno-usb-tcp-host-retry.patch inferno-dart-error-lock.patch; do
-  pf="$HERE/$p"
-  [ -f "$pf" ] || die "$p missing next to $0 (copy the whole payload)"
-  if git -C "$SRC" apply --reverse --check "$pf" >/dev/null 2>&1; then
-    log "patch $p: already applied"
-  elif git -C "$SRC" apply --check "$pf" >/dev/null 2>&1; then
-    git -C "$SRC" apply "$pf" || die "applying $p failed"
-    log "patch $p: applied (ninja rebuilds only the changed file)"
-  else
-    die "$p does not apply to $SRC - CLEAN_SRC=1 to re-download the source"
-  fi
-done
+  patches_apply_check && save_pristine
+  for p in $PATCHES; do
+    if ! git -C "$SRC" apply "$HERE/$p"; then
+      warn "$p failed - resetting the patched files and trying once more"
+      restore_pristine || die "could not restore pristine copies (network?) - CLEAN_SRC=1"
+      for q in $PATCHES; do git -C "$SRC" apply "$HERE/$q" || die "$q does not apply to pristine ${REF:0:9} - CLEAN_SRC=1"; done
+      break
+    fi
+  done
+  patches_applied || die "ios-tools patches did not end up applied - CLEAN_SRC=1"
+  log "ios-tools patches: applied (ninja rebuilds only the changed files)"
+fi
 
 # ---------- configure (reuse only an identical, completed configure) -------
 TARGETS="aarch64-softmmu"

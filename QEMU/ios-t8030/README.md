@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.3.1.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.3.2.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,7 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.3.2 step 3 upgrade fix:** a source tree patched by any earlier version (or partly patched / edited) no longer stops step 3 with "does not apply": the patched files are reset to pristine cc4302a and the current patches applied fresh, no CLEAN_SRC needed.
 - **v1.3.1 USB link fixes:** the USB-host side only cancels packets the iOS side really has (no more "TCP_USB_CANCEL ... not found"), and drops stale answers for cancelled packets until the iOS side acknowledges the cancel. The iOS side answers a cancel or a request for a vanished endpoint without closing the link, and no longer reads a packet after it was freed (that corrupted the stream and made the USB-host VM drop the iPhone). The USB-host VM's USB messages and warnings are shown on screen; the status lines show usbmuxd's device count and idevicerestore's last line; while restored waits for the host, step 5 polls every second. Re-run step 3 (recompiles two files), then step 5.
 - **v1.3.0 restore audit (everything after the USB link connects):**
   - **idevicerestore crash:** when libusb cannot start in the chroot (no usbfs, or the uevent netlink socket is denied on Android), libirecovery's event thread used a NULL libusb context and idevicerestore died with SIGSEGV before it even asked usbmuxd. Fixed by `libirecovery-no-usb.patch`; restore-mode devices go through usbmuxd anyway.
@@ -283,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.3.1.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.3.2.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
