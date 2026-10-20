@@ -42,12 +42,23 @@ BASH_ENTRY = {
     "UserName": "root",
 }
 
+FIRSTBOOT_KEY = "/System/Library/LaunchDaemons/ios-tools.firstboot.plist"
+FIRSTBOOT_ENTRY = {
+    "Label": "ios-tools.firstboot",
+    "ProgramArguments": ["/bin/bash", "/usr/libexec/ios-tools-firstboot.sh"],
+    "RunAtLoad": True,
+    "UserName": "root",
+    "POSIXSpawnType": "Interactive",
+    "EnablePressuredExit": False,
+}
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("plist")
     ap.add_argument("--out", default=None, help="output path (default: in place)")
     ap.add_argument("--no-bash", action="store_true", help="do not add the bash daemon")
+    ap.add_argument("--firstboot", action="store_true", help="add the one-shot uicache daemon")
     ap.add_argument("--no-disable", action="store_true", help="do not disable broken services")
     a = ap.parse_args()
 
@@ -78,6 +89,11 @@ def main() -> int:
             daemons[BASH_KEY] = dict(BASH_ENTRY)
             changed += 1
             print(f"[*] added root bash daemon on /dev/console ({BASH_KEY})")
+
+    if a.firstboot and daemons.get(FIRSTBOOT_KEY) != FIRSTBOOT_ENTRY:
+        daemons[FIRSTBOOT_KEY] = dict(FIRSTBOOT_ENTRY)
+        changed += 1
+        print(f"[*] added one-shot icon refresh daemon (uicache) ({FIRSTBOOT_KEY})")
 
     out = a.out or a.plist
     # Write a new file and rename it over the old one: on iOS the plist is

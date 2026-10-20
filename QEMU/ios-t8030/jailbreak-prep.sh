@@ -37,7 +37,7 @@
 #                                same, without staging (used inside the VM).
 #   jailbreak-prep.sh status     show what is staged / applied.
 #
-# Env: DATA (default /root/InfernoData), WITH_CYDIA=1 also stage Cydia.app,
+# Env: DATA (default /root/InfernoData),
 #      SKIP_FS_PATCHES=1 skip the dyld-cache software-rendering patch.
 #
 # Nothing copyrighted is stored in the repo: the bootstrap comes from
@@ -84,12 +84,21 @@ stage() {
     log "bootstrap archive OK ($(wc -c < "$JB/strap.tar.lzma" | tr -d ' ') bytes)"
   fi
 
-  if [ "${WITH_CYDIA:-0}" = "1" ]; then
-    CYDIA_URL=$(python3 -c 'import json,sys;b=json.load(open(sys.argv[1]))["bootstraps"];print(next((x["bootstrap_tar"] for x in b if x.get("label")=="Cydia"),""))' "$JB/config.json")
-    if [ -n "$CYDIA_URL" ] && [ ! -s "$JB/cydia.tar.lzma" ]; then
-      log "downloading Cydia bootstrap: $CYDIA_URL"
-      curl -fL --retry 3 -o "$JB/cydia.tar.lzma" "$CYDIA_URL" || warn "Cydia download failed (optional)"
+  # Package manager: Cydia from checkra.in's loader config (the same bootstrap
+  # the checkra1n loader installs on top of this core strap; iOS 14 rootful).
+  CYDIA_URL=$(python3 -c 'import json,sys;b=json.load(open(sys.argv[1]))["bootstraps"];x=next((x for x in b if x.get("label")=="Cydia"),{});print(x.get("bootstrap_tar",""),x.get("bootstrap_status",""))' "$JB/config.json")
+  set -- $CYDIA_URL
+  if [ -n "${1:-}" ]; then
+    if [ -s "$JB/cydia.tar.lzma" ] && [ "$(cat "$JB/cydia.url" 2>/dev/null)" = "$1" ] && [ -s "$JB/cydia.status" ]; then
+      log "Cydia bootstrap already downloaded"
+    else
+      log "downloading Cydia (package manager): $1"
+      curl -fL --retry 3 -o "$JB/cydia.tar.lzma.partial" "$1" && mv -f "$JB/cydia.tar.lzma.partial" "$JB/cydia.tar.lzma" \
+        && { [ -z "${2:-}" ] || curl -fsSL --retry 3 -o "$JB/cydia.status" "$2"; } && echo "$1" > "$JB/cydia.url" \
+        || die "Cydia download failed"
     fi
+  else
+    die "no Cydia bootstrap in the checkra1n loader config"
   fi
 
   cp -f "$HERE/patch-launchd.py" "$JB/patch-launchd.py" 2>/dev/null || true
@@ -175,19 +184,79 @@ apply_to() {
   if [ ! -e "$sys/$MARK_JB" ]; then
     log "extracting checkra1n core bootstrap into System volume"
     xz --format=lzma -dc "$JB/strap.tar.lzma" | tar --keep-directory-symlink -xpf - -C "$sys" || die "bootstrap extract failed"
-    if [ -s "$JB/cydia.tar.lzma" ]; then
-      xz --format=lzma -dc "$JB/cydia.tar.lzma" | tar --keep-directory-symlink -xpf - -C "$sys" || warn "Cydia extract failed"
-    fi
     touch "$sys/$MARK_JB"
   else
     log "bootstrap already on the volume"
   fi
 
-  log "patching launchd.plist (disable broken services + root bash on console)"
-  python3 "$JB/patch-launchd.py" "$sys/$LAUNCHD_REL" || die "launchd patch failed"
+  # --- package manager (Cydia) + one-shot icon refresh --------------------
+  if [ ! -x "$sys/Applications/Cydia.app/Cydia" ]; then
+    [ -s "$JB/cydia.tar.lzma" ] || die "Cydia bootstrap not staged ($JB/cydia.tar.lzma)"
+    log "installing Cydia.app into /Applications on the System volume"
+    xz --format=lzma -dc "$JB/cydia.tar.lzma" | tar --keep-directory-symlink -xpf - -C "$sys" || die "Cydia extract failed"
+  else
+    log "Cydia.app already in /Applications"
+  fi
+  if [ -s "$JB/cydia.status" ]; then
+    python3 - "$sys/Library/dpkg/status" "$JB/cydia.status" <<'PY' || die "dpkg status merge failed"
+import sys, re
+st, add = sys.argv[1], sys.argv[2]
+cur = open(st).read() if __import__("os").path.exists(st) else ""
+have = set(re.findall(r"^Package: (\S+)", cur, re.M))
+new = [b for b in open(add).read().strip().split("\n\n") if b.strip()]
+out = [b for b in new if re.search(r"^Package: (\S+)", b, re.M).group(1) not in have]
+if out:
+    with open(st, "a") as f:
+        f.write(("" if cur.endswith("\n\n") or not cur else ("\n" if cur.endswith("\n") else "\n\n")) + "\n\n".join(out) + "\n\n")
+print("[*] dpkg status: %d Cydia package(s) registered%s" % (len(out), "" if out else " (already present)"))
+PY
+  fi
+  # /var (Data volume) is SEP-encrypted and can't be edited offline, so the
+  # LaunchServices / icon caches are refreshed on the next boot instead.
+  cat > "$sys/usr/libexec/ios-tools-firstboot.sh" <<'FB'
+#!/bin/bash
+# ios-tools: one-shot after a bootstrap change: register /Applications apps
+# (uicache) once SpringBoard is up. Log: /var/log/ios-tools-firstboot.log
+exec >> /private/var/log/ios-tools-firstboot.log 2>&1
+M=/private/var/mobile/.ios-tools-uicache
+STAMP=$(cat /.ios-tools-apps-stamp 2>/dev/null)
+[ -n "$STAMP" ] && [ "$(cat $M 2>/dev/null)" = "$STAMP" ] && exit 0
+echo "$(date) ios-tools firstboot: waiting for SpringBoard"
+for i in $(seq 1 180); do launchctl list 2>/dev/null | grep -q com.apple.SpringBoard && break; sleep 5; done
+sleep 30
+mkdir -p /private/var/lib/cydia /private/var/mobile/Library/Caches/com.saurik.Cydia/lists /private/var/lib/apt/lists/partial
+chown -R 501:501 /private/var/mobile/Library/Caches/com.saurik.Cydia 2>/dev/null
+[ -x /usr/libexec/cydia/firmware.sh ] && /usr/libexec/cydia/firmware.sh
+for a in /Applications/Cydia.app /Applications/Sileo.app /Applications/Zebra.app; do [ -f "$a/Info.plist" ] && uicache -p "$a"; done
+uicache
+echo "$STAMP" > $M
+echo "$(date) ios-tools firstboot: uicache done: $(ls /Applications | tr '\n' ' ')"
+echo "[ios-tools] icons refreshed (uicache): $(ls /Applications | tr '\n' ' ')" > /dev/console
+FB
+  chmod 0755 "$sys/usr/libexec/ios-tools-firstboot.sh"; chown 0:0 "$sys/usr/libexec/ios-tools-firstboot.sh" 2>/dev/null || true
+  date +%s > "$sys/.ios-tools-apps-stamp"
+
+  log "patching launchd.plist (disable broken services + root bash on console + one-shot uicache)"
+  python3 "$JB/patch-launchd.py" "$sys/$LAUNCHD_REL" --firstboot || die "launchd patch failed"
   sync
+  verify_on "$sys"
   date > "$DATA/JAILBREAK_APPLIED"
+  echo 2 > "$DATA/JAILBREAK_LEVEL"
   log "applied. run-t8030.sh will now add launchd_unsecure_cache=1."
+}
+
+verify_on() {
+  local sys="$1" f ok=1
+  echo "----- verification (System volume) -----"
+  for f in bin/bash usr/bin/apt usr/bin/dpkg usr/bin/uicache Applications/Cydia.app/Cydia \
+           Applications/Cydia.app/Info.plist usr/libexec/ios-tools-firstboot.sh usr/libexec/cydia/firmware.sh; do
+    if [ -e "$sys/$f" ]; then echo "  OK   /$f"; else echo "  MISSING /$f"; ok=0; fi
+  done
+  echo "  /Applications: $(ls "$sys/Applications" | grep -c '\.app$') apps; package manager: $(ls "$sys/Applications" | grep -iE '^(cydia|sileo|zebra)' | tr '\n' ' ')"
+  echo "  dpkg status: $(grep -c '^Package:' "$sys/Library/dpkg/status") packages ($(grep -E '^Package: cydia$' -c "$sys/Library/dpkg/status") x cydia)"
+  python3 -c "import plistlib,sys;d=plistlib.load(open(sys.argv[1],'rb'))['LaunchDaemons'];print('  launchd.plist: bash daemon', 'yes' if '/System/Library/LaunchDaemons/bash.plist' in d else 'NO', ', uicache one-shot', 'yes' if '/System/Library/LaunchDaemons/ios-tools.firstboot.plist' in d else 'NO')" "$sys/$LAUNCHD_REL"
+  echo "----------------------------------------"
+  [ "$ok" = 1 ] || die "verification failed (see MISSING above)"
 }
 
 # Linux path: only if the running kernel has an APFS driver with write support
@@ -263,14 +332,15 @@ status() {
   echo "fs patcher built : $( [ -x "$JB/inferno_fs_patcher" ] && echo yes || echo no )"
   echo "mac helper       : $( [ -x "$JB/apply-on-mac.sh" ] && echo "$JB/apply-on-mac.sh" || echo no )"
   echo "applied to disk  : $( [ -f "$DATA/JAILBREAK_APPLIED" ] && cat "$DATA/JAILBREAK_APPLIED" || echo no )"
+  echo "Cydia + uicache  : $( [ "$(cat "$DATA/JAILBREAK_LEVEL" 2>/dev/null)" = 2 ] && echo installed || echo "no (re-run step 8)" )"
   echo "kernel patches   : always on (Inferno: AMFI/codesign/pmap_cs bypass)"
 }
 
 case "${1:-stage}" in
   stage)
     stage
-    if [ -f "$DATA/JAILBREAK_APPLIED" ]; then
-      log "already applied ($(cat "$DATA/JAILBREAK_APPLIED"))"
+    if [ -f "$DATA/JAILBREAK_APPLIED" ] && [ "$(cat "$DATA/JAILBREAK_LEVEL" 2>/dev/null)" = 2 ]; then
+      log "already applied with Cydia + icon refresh ($(cat "$DATA/JAILBREAK_APPLIED"))"
     elif grep -qw apfs /proc/filesystems 2>/dev/null && try_linux_apply; then
       :
     elif try_companion_apply; then
