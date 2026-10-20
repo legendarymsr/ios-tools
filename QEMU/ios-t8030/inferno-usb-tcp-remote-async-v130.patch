@@ -1,0 +1,1455 @@
+diff --git a/hw/usb/dev-tcp-remote.c b/hw/usb/dev-tcp-remote.c
+index 5639ab6..25109e6 100644
+--- a/hw/usb/dev-tcp-remote.c
++++ b/hw/usb/dev-tcp-remote.c
+@@ -22,37 +22,40 @@
+ #include "hw/usb.h"
+ #include "hw/usb/dev-tcp-remote.h"
+ #include "hw/usb/tcp-usb.h"
+-#include "migration/blocker.h"
++#include "io/channel-util.h"
++#include "io/channel.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+ #include "qemu/lockable.h"
+ #include "qemu/main-loop.h"
++#include "qemu/coroutine.h"
++#include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/sockets.h"
+ #include "qom/object.h"
+ #include "trace.h"
+ 
+ #if 0
+-#define DPRINTF(fmt, ...)                                       \
+-    do {                                                        \
+-        fprintf(stderr, "dev-tcp-remote: " fmt, ##__VA_ARGS__); \
+-    } while (0)
++    #define DPRINTF(fmt, ...)                                       \
++        do {                                                        \
++            fprintf(stderr, "dev-tcp-remote: " fmt, ##__VA_ARGS__); \
++        }                                                           \
++        while (0)
+ #else
+-#define DPRINTF(fmt, ...) \
+-    do {                  \
+-    } while (0)
++    #define DPRINTF(fmt, ...) \
++        do { }                \
++        while (0)
+ #endif
+ 
+-static USBTCPInflightPacket *
+-usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
+-                                    uint64_t id)
++static USBTCPInflightPacket* usb_tcp_remote_take_inflight_packet(USBTCPRemoteState* s, int pid, uint8_t ep, uint64_t id)
+ {
+-    USBTCPInflightPacket *p;
++    USBTCPInflightPacket* p;
+ 
+     QEMU_LOCK_GUARD(&s->queue_mutex);
+ 
+     QTAILQ_FOREACH (p, &s->queue, queue) {
+         if (p->p->pid == pid && p->p->ep->nr == ep && p->p->id == id) {
++            QTAILQ_REMOVE(&s->queue, p, queue);
+             return p;
+         }
+     }
+@@ -60,111 +63,222 @@ usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
+     return NULL;
+ }
+ 
+-static void usb_tcp_remote_clean_inflight_queue(USBTCPRemoteState *s)
++static void usb_tcp_remote_drop_inflight_packet(USBTCPRemoteState* s, USBPacket* packet)
+ {
+-    USBTCPInflightPacket *p;
++    USBTCPInflightPacket* p;
+ 
+     QEMU_LOCK_GUARD(&s->queue_mutex);
+ 
+     QTAILQ_FOREACH (p, &s->queue, queue) {
+-        p->p->status = USB_RET_STALL;
+-        qatomic_set(&p->handled, 1);
+-        /* Will be cleaned by usb_tcp_remote_handle_packet */
++        if (p->p == packet) {
++            QTAILQ_REMOVE(&s->queue, p, queue);
++            g_free(p);
++            return;
++        }
++    }
++}
++
++static void usb_tcp_remote_clean_inflight_queue(USBTCPRemoteState* s)
++{
++    USBTCPInflightPacket* p;
++    USBDevice*            dev = USB_DEVICE(s);
++
++    QEMU_LOCK_GUARD(&s->queue_mutex);
++
++    while (!QTAILQ_EMPTY(&s->queue)) {
++        p = QTAILQ_FIRST(&s->queue);
++        QTAILQ_REMOVE(&s->queue, p, queue);
++
++        /*
++         * Do not complete here: the packet may be queued behind others on its
++         * endpoint (usb_packet_complete asserts it is first) or not async at
++         * all. The detach in usb_tcp_remote_cleanup makes the host controller
++         * cancel every outstanding packet.
++         */
++        (void)dev;
++        g_free(p);
++    }
++}
++
++static void usb_tcp_remote_clean_send_queue(USBTCPRemoteState* s)
++{
++    USBTCPRemoteMsg* m;
++
++    QEMU_LOCK_GUARD(&s->send_mutex);
++
++    while (!QTAILQ_EMPTY(&s->send_queue)) {
++        m = QTAILQ_FIRST(&s->send_queue);
++        QTAILQ_REMOVE(&s->send_queue, m, queue);
++        g_free(m);
+     }
+ }
+ 
+-static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState *s)
++static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState* s)
+ {
+-    USBTCPCompletedPacket *p;
+-    USBDevice *dev = USB_DEVICE(s);
++    USBTCPCompletedPacket* p;
++    USBDevice*             dev = USB_DEVICE(s);
+ 
+     QEMU_LOCK_GUARD(&s->completed_queue_mutex);
+ 
+     while (!QTAILQ_EMPTY(&s->completed_queue)) {
+         p = QTAILQ_FIRST(&s->completed_queue);
+         QTAILQ_REMOVE(&s->completed_queue, p, queue);
+-        if (p->p->status == USB_RET_REMOVE_FROM_QUEUE) {
+-            dev->port->ops->complete(dev->port, p->p);
+-        } else {
+-            usb_packet_complete(USB_DEVICE(s), p->p);
+-        }
++        /* Same as above: the detach cancels these packets. */
++        (void)dev;
+         g_free(p);
+     }
+ }
+ 
+-static void usb_tcp_remote_cleanup(void *opaque)
++/*
++ * Complete one packet the remote end answered. Returns false if it has to
++ * wait because older packets on the same endpoint are still outstanding.
++ */
++static bool usb_tcp_remote_try_complete(USBTCPRemoteState* s, USBPacket* p)
+ {
+-    USBTCPRemoteState *s = opaque;
++    USBDevice* dev = USB_DEVICE(s);
+ 
+-    if (s->fd == -1) {
+-        return;
++    if (p->status == USB_RET_REMOVE_FROM_QUEUE) {
++        if (usb_packet_is_inflight(p)) { dev->port->ops->complete(dev->port, p); }
++        return true;
+     }
++    if (p->state != USB_PACKET_ASYNC) {
++        warn_report("usb-tcp-remote: dropping a response for a packet in state %d (ep %d id 0x%" PRIx64 ")",
++                    p->state, p->ep->nr, p->id);
++        return true;
++    }
++    if (!p->stream && QTAILQ_FIRST(&p->ep->queue) != p) { return false; }
++    usb_packet_complete(dev, p);
++    return true;
++}
+ 
+-    close(s->fd);
++static void usb_tcp_remote_forget_completed(USBTCPRemoteState* s, USBPacket* packet)
++{
++    USBTCPCompletedPacket *c, *next;
+ 
+-    s->fd = -1;
+-    s->closed = true;
++    QEMU_LOCK_GUARD(&s->completed_queue_mutex);
++
++    QTAILQ_FOREACH_SAFE (c, &s->completed_queue, queue, next) {
++        if (c->p == packet) {
++            QTAILQ_REMOVE(&s->completed_queue, c, queue);
++            g_free(c);
++        }
++    }
++}
++
++static void usb_tcp_remote_cleanup(void* opaque)
++{
++    USBTCPRemoteState* s   = opaque;
++    QIOChannel*        ioc = s->ioc;
++
++    if (ioc == NULL) { return; }
++
++    s->ioc  = NULL;
+     s->addr = 0;
++    info_report("usb-tcp-remote: the iPhone disconnected");
+ 
+-    usb_tcp_remote_clean_completed_queue(s);
++    qio_channel_shutdown(ioc, QIO_CHANNEL_SHUTDOWN_BOTH, NULL);
++    object_unref(OBJECT(ioc));
+ 
+-    if (USB_DEVICE(s)->attached) {
+-        usb_device_detach(USB_DEVICE(s));
+-    }
++    usb_tcp_remote_clean_send_queue(s);
++    usb_tcp_remote_clean_completed_queue(s);
++    timer_del(s->nak_timer);
++    g_list_free(s->nak_list);
++    s->nak_list = NULL;
+ 
+-    qemu_cond_broadcast(&s->cond);
+-    migrate_del_blocker(&s->migration_blocker);
++    if (USB_DEVICE(s)->attached) { usb_device_detach(USB_DEVICE(s)); }
+ }
+ 
+-static void usb_tcp_remote_update_addr_bh(void *opaque)
++static void usb_tcp_remote_update_addr_bh(void* opaque)
+ {
+-    USBTCPRemoteState *s = opaque;
+-    USBDevice *dev = USB_DEVICE(s);
+-    dev->addr = s->addr;
++    USBTCPRemoteState* s   = opaque;
++    USBDevice*         dev = USB_DEVICE(s);
++    dev->addr              = s->addr;
+     trace_usb_set_addr(dev->addr);
+ }
+ 
+-static void usb_tcp_remote_completed_bh(void *opaque)
++static void usb_tcp_remote_completed_bh(void* opaque)
+ {
+-    USBTCPRemoteState *s = opaque;
+-    USBDevice *dev = USB_DEVICE(s);
+-
+-    USBTCPCompletedPacket *p;
+-
+-    QEMU_LOCK_GUARD(&s->completed_queue_mutex);
+-
+-    while (!QTAILQ_EMPTY(&s->completed_queue)) {
+-        p = QTAILQ_FIRST(&s->completed_queue);
+-        QTAILQ_REMOVE(&s->completed_queue, p, queue);
++    USBTCPRemoteState* s   = opaque;
++    USBDevice*         dev = USB_DEVICE(s);
++    USBTCPCompletedPacket* p;
++    QTAILQ_HEAD(, USBTCPCompletedPacket) deferred = QTAILQ_HEAD_INITIALIZER(deferred);
++    bool progress = true;
++
++    while (progress) {
++        progress = false;
++        for (;;) {
++            WITH_QEMU_LOCK_GUARD(&s->completed_queue_mutex)
++            {
++                p = QTAILQ_FIRST(&s->completed_queue);
++                if (p) { QTAILQ_REMOVE(&s->completed_queue, p, queue); }
++            }
++            if (p == NULL) { break; }
+ 
+-        qemu_mutex_unlock(&s->completed_queue_mutex);
+-        if (s->addr != dev->addr && p->p->ep->nr == 0 &&
+-            p->p->pid == USB_TOKEN_IN && p->p->status == USB_RET_SUCCESS) {
+-            /*
+-             * EHCI will append the completed packet to a queue
+-             * and then schedule a BH
+-             * BH scheduling is FIFO
+-             * we want addr to be update after the IN status completed
+-             */
+-            qemu_bh_schedule(s->addr_bh);
+-        }
+-        if (usb_packet_is_inflight(p->p)) {
+-            if (p->p->status == USB_RET_REMOVE_FROM_QUEUE) {
+-                dev->port->ops->complete(dev->port, p->p);
++            if (s->addr != dev->addr && p->p->ep->nr == 0 && p->p->pid == USB_TOKEN_IN
++                && p->p->status == USB_RET_SUCCESS)
++            {
++                /*
++                 * EHCI will append the completed packet to a queue
++                 * and then schedule a BH
++                 * BH scheduling is FIFO
++                 * we want addr to be update after the IN status completed
++                 */
++                qemu_bh_schedule(s->addr_bh);
++            }
++            if (usb_tcp_remote_try_complete(s, p->p)) {
++                g_free(p);
++                progress = true;
+             } else {
+-                usb_packet_complete(USB_DEVICE(s), p->p);
++                QTAILQ_INSERT_TAIL(&deferred, p, queue);
+             }
+         }
+-        g_free(p);
+-        qemu_mutex_lock(&s->completed_queue_mutex);
++        /* put the out-of-order ones back, oldest first, and retry them */
++        WITH_QEMU_LOCK_GUARD(&s->completed_queue_mutex)
++        {
++            while ((p = QTAILQ_LAST(&deferred)) != NULL) {
++                QTAILQ_REMOVE(&deferred, p, queue);
++                QTAILQ_INSERT_HEAD(&s->completed_queue, p, queue);
++            }
++        }
++        if (!progress) { break; }
++        WITH_QEMU_LOCK_GUARD(&s->completed_queue_mutex)
++        {
++            progress = !QTAILQ_EMPTY(&s->completed_queue);
++        }
+     }
+ }
+ 
+-static void usb_tcp_remote_closed(USBTCPRemoteState *s)
++#define USB_TCP_REMOTE_NAK_RETRY_MS 2
++
++static void usb_tcp_remote_send_request(USBTCPRemoteState* s, USBPacket* p);
++
++static void usb_tcp_remote_nak_retry(void* opaque)
+ {
+-    if (s->fd == -1) {
+-        return;
++    USBTCPRemoteState* s    = opaque;
++    GList*             list = s->nak_list;
++    GList*             l;
++
++    s->nak_list = NULL;
++    for (l = list; l != NULL; l = l->next) {
++        USBPacket* p = l->data;
++        if (s->closed) { break; }
++        /* cancelled packets were removed from nak_list by cancel_packet */
++        if (p->state == USB_PACKET_ASYNC) { usb_tcp_remote_send_request(s, p); }
++    }
++    g_list_free(list);
++}
++
++static void usb_tcp_remote_nak_later(USBTCPRemoteState* s, USBPacket* p)
++{
++    if (g_list_find(s->nak_list, p) == NULL) { s->nak_list = g_list_append(s->nak_list, p); }
++    if (!timer_pending(s->nak_timer)) {
++        timer_mod(s->nak_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + USB_TCP_REMOTE_NAK_RETRY_MS);
+     }
++}
++
++static void usb_tcp_remote_closed(USBTCPRemoteState* s)
++{
++    if (s->closed) { return; }
+ 
+     s->closed = true;
+     smp_wmb();
+@@ -175,237 +289,277 @@ static void usb_tcp_remote_closed(USBTCPRemoteState *s)
+     qemu_bh_schedule(s->cleanup_bh);
+ }
+ 
+-static int usb_tcp_remote_read(USBTCPRemoteState *s, void *buffer,
+-                               unsigned int length)
++/* a coroutine of an older, already replaced connection must not close the new one */
++static void usb_tcp_remote_closed_ioc(USBTCPRemoteState* s, QIOChannel* ioc)
+ {
+-    int ret = 0;
+-    unsigned int n = 0;
+-    bool locked = bql_locked();
+-    if (locked) {
+-        bql_unlock();
+-    }
+-
+-    while (n < length) {
+-        ret = recv(s->fd, buffer + n, length - n, 0);
+-        if (ret <= 0) {
+-            if (locked) {
+-                bql_lock();
+-            }
+-            usb_tcp_remote_closed(s);
+-            return -errno;
+-        }
++    if (ioc == s->ioc) { usb_tcp_remote_closed(s); }
++}
+ 
+-        n += ret;
+-    }
++static ssize_t coroutine_fn usb_tcp_remote_read(USBTCPRemoteState* s, QIOChannel* ioc, void* buffer,
++                                                unsigned int length)
++{
++    struct iovec iov = {.iov_base = buffer, .iov_len = length};
++    Error*       err = NULL;
++    ssize_t      ret;
++
++    ret = qio_channel_readv_full_all_eof(ioc, &iov, 1, NULL, 0, 0, &err);
++
++    if (err) { error_report_err(err); }
+ 
+-    if (locked) {
+-        bql_lock();
++    if (ret <= 0) {
++        usb_tcp_remote_closed_ioc(s, ioc);
++        return -1;
+     }
+ 
+-    return n;
++    return length;
+ }
+ 
+-static int usb_tcp_remote_write(USBTCPRemoteState *s, void *buffer,
+-                                unsigned int length)
++static void coroutine_fn usb_tcp_remote_send_co(void* opaque)
+ {
+-    int ret = 0;
+-    unsigned int n = 0;
+-
+-    while (n < length) {
+-        ret = send(s->fd, (char *)buffer + n, length - n, 0);
+-        if (ret <= 0) {
+-            usb_tcp_remote_closed(s);
+-            return -errno;
++    USBTCPRemoteState* s      = opaque;
++    g_autoptr(QIOChannel) ioc = NULL;
++
++    if (s->ioc == NULL) { return; }
++
++    ioc        = QIO_CHANNEL(object_ref(s->ioc));
++    s->sending = true;
++
++    for (;;) {
++        USBTCPRemoteMsg* m = NULL;
++        struct iovec     iov;
++        Error*           err = NULL;
++
++        WITH_QEMU_LOCK_GUARD(&s->send_mutex)
++        {
++            m = QTAILQ_FIRST(&s->send_queue);
++            if (m != NULL) { QTAILQ_REMOVE(&s->send_queue, m, queue); }
++        }
++
++        if (m == NULL) { break; }
++
++        iov.iov_base = m->data;
++        iov.iov_len  = m->len;
++
++        if (qio_channel_writev_full_all(ioc, &iov, 1, NULL, 0, 0, &err) < 0) {
++            if (err) { error_report_err(err); }
++            g_free(m);
++            usb_tcp_remote_closed_ioc(s, ioc);
++            break;
+         }
+ 
+-        n += ret;
++        g_free(m);
+     }
+ 
+-    return n;
++    s->sending = false;
+ }
+ 
+-static bool usb_tcp_remote_read_one(USBTCPRemoteState *s)
++static void usb_tcp_remote_send_bh(void* opaque)
+ {
+-    tcp_usb_header_t hdr = { 0 };
++    USBTCPRemoteState* s = opaque;
+ 
+-    if (usb_tcp_remote_read(s, &hdr, sizeof(hdr)) != sizeof(hdr)) {
+-        return false;
+-    }
++    if (s->sending || s->closed) { return; }
++
++    qemu_coroutine_enter(qemu_coroutine_create(usb_tcp_remote_send_co, s));
++}
++
++static void usb_tcp_remote_send(USBTCPRemoteState* s, const struct iovec* iov, int niov)
++{
++    size_t           len = iov_size(iov, niov);
++    USBTCPRemoteMsg* m   = g_malloc(sizeof(USBTCPRemoteMsg) + len);
++
++    m->len = len;
++    iov_to_buf(iov, niov, 0, m->data, len);
++
++    WITH_QEMU_LOCK_GUARD(&s->send_mutex) { QTAILQ_INSERT_TAIL(&s->send_queue, m, queue); }
++
++    qemu_bh_schedule(s->send_bh);
++}
++
++static bool coroutine_fn usb_tcp_remote_read_one(USBTCPRemoteState* s, QIOChannel* ioc)
++{
++    tcp_usb_header_t hdr = {0};
++
++    if (usb_tcp_remote_read(s, ioc, &hdr, sizeof(hdr)) != sizeof(hdr)) { return false; }
+ 
+     switch (hdr.type) {
+-    case TCP_USB_RESPONSE: {
+-        tcp_usb_response_header rhdr = { 0 };
+-        USBPacket *p = NULL;
+-        USBTCPInflightPacket *pkt = NULL;
+-        bool cancelled = false;
++        case TCP_USB_RESPONSE: {
++            tcp_usb_response_header rhdr      = {0};
++            USBPacket*              p         = NULL;
++            USBTCPInflightPacket*   pkt       = NULL;
++            bool                    cancelled = false;
+ 
+-        if (usb_tcp_remote_read(s, &rhdr, sizeof(rhdr)) != sizeof(rhdr)) {
+-            return false;
+-        }
++            if (usb_tcp_remote_read(s, ioc, &rhdr, sizeof(rhdr)) != sizeof(rhdr)) { return false; }
+ 
+-        smp_rmb();
+-        pkt =
+-            usb_tcp_remote_find_inflight_packet(s, rhdr.pid, rhdr.ep, rhdr.id);
+-        if (pkt == NULL) {
+-            p = usb_ep_find_packet_by_id(USB_DEVICE(s), rhdr.pid, rhdr.ep,
+-                                         rhdr.id);
+-        } else {
+-            p = pkt->p;
+-        }
+-        DPRINTF("%s: TCP_USB_RESPONSE "
+-                "Received packet pid: 0x%x ep: %d id: 0x%" PRIx64
+-                " status: %d\n",
+-                __func__, rhdr.pid, rhdr.ep, rhdr.id, rhdr.status);
+-
+-        if (p == NULL) {
+-            warn_report("%s: TCP_USB_RESPONSE "
+-                        "Invalid packet pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
+-                        __func__, rhdr.pid, rhdr.ep, rhdr.id);
+-            //__builtin_dump_struct(&rhdr, &printf);
+-            /* likely canceled */
+-            /* When an EP is aborted, all of its queued packets are removed */
+-        }
++            /*
++             * Read the IN payload before looking the packet up: the read can
++             * yield to the main loop, which may cancel and free the packet.
++             */
++            g_autofree void* inbuf = NULL;
++            if (rhdr.length > 0 && rhdr.status != USB_RET_ASYNC && rhdr.pid == USB_TOKEN_IN) {
++                inbuf = g_malloc(rhdr.length);
++                if (usb_tcp_remote_read(s, ioc, inbuf, rhdr.length) < rhdr.length) { return false; }
++            }
+ 
+-        if (rhdr.length > 0 && rhdr.status != USB_RET_ASYNC) {
+-            g_autofree void *buffer = g_malloc(rhdr.length);
+-            if (rhdr.pid == USB_TOKEN_IN) {
+-                if (usb_tcp_remote_read(s, buffer, rhdr.length) < rhdr.length) {
+-                    return false;
+-                }
+-                if (p) {
+-                    usb_packet_copy(p, buffer, rhdr.length);
++            pkt = usb_tcp_remote_take_inflight_packet(s, rhdr.pid, rhdr.ep, rhdr.id);
++            if (pkt == NULL) { p = usb_ep_find_packet_by_id(USB_DEVICE(s), rhdr.pid, rhdr.ep, rhdr.id); }
++            else {
++                p = pkt->p;
++            }
++            DPRINTF("%s: TCP_USB_RESPONSE "
++                    "Received packet pid: 0x%x ep: %d id: 0x%" PRIx64 " status: %d\n",
++                    __func__, rhdr.pid, rhdr.ep, rhdr.id, rhdr.status);
++
++            if (p == NULL) {
++                warn_report("%s: TCP_USB_RESPONSE "
++                            "Invalid packet pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
++                            __func__, rhdr.pid, rhdr.ep, rhdr.id);
++                //__builtin_dump_struct(&rhdr, &printf);
++                /* likely canceled */
++                /* When an EP is aborted, all of its queued packets are removed */
++            }
++
++            if (p != NULL && p->state == USB_PACKET_ASYNC
++                && (rhdr.status == USB_RET_NAK || rhdr.status == USB_RET_ASYNC))
++            {
++                g_free(pkt);
++                /* ASYNC: the device side keeps it, its final response follows */
++                if (rhdr.status == USB_RET_NAK) { usb_tcp_remote_nak_later(s, p); }
++                return true;
++            }
++            if (p != NULL) {
++                switch (rhdr.status) {
++                    case USB_RET_SUCCESS:
++                    case USB_RET_NODEV:
++                    case USB_RET_NAK:
++                    case USB_RET_STALL:
++                    case USB_RET_BABBLE:
++                    case USB_RET_IOERROR:
++                    case USB_RET_REMOVE_FROM_QUEUE: break;
++                    default:
++                        warn_report("usb-tcp-remote: unexpected status %d for ep %d id 0x%" PRIx64
++                                    ", failing that packet",
++                                    rhdr.status, rhdr.ep, rhdr.id);
++                        rhdr.status = USB_RET_IOERROR;
++                        rhdr.length = 0;
++                        break;
+                 }
+-            } else if (p) {
+-                p->actual_length += rhdr.length;
+             }
+-        }
+ 
+-        if (!p) {
+-            return true;
+-        }
++            if (rhdr.length > 0 && rhdr.status != USB_RET_ASYNC && p) {
++                if (inbuf) {
++                    usb_packet_copy(p, inbuf, MIN(rhdr.length, p->iov.size - p->actual_length));
++                }
++                else if (rhdr.pid != USB_TOKEN_IN) {
++                    p->actual_length += rhdr.length;
++                }
++            }
+ 
+-        p->status = rhdr.status;
+-        if (p->state == USB_PACKET_ASYNC) {
+-            if (p->status == USB_RET_NAK || p->status == USB_RET_ASYNC) {
+-                fprintf(stderr,
+-                        "%s: TCP_USB_RESPONSE "
+-                        "USB_RET_NAK|ASYNC an ASYNC packet",
+-                        __func__);
+-                usb_tcp_remote_closed(s);
+-                return false;
++            if (!p) {
++                g_free(pkt);
++                return true;
+             }
+-        }
+-        if (p->state == USB_PACKET_QUEUED) {
+-            if (p->status == USB_RET_NAK) {
+-                p->status = USB_RET_IOERROR;
++
++            p->status = rhdr.status;
++            if (p->state == USB_PACKET_QUEUED) {
++                if (p->status == USB_RET_NAK) { p->status = USB_RET_IOERROR; }
+             }
+-        }
+-        if (p->state == USB_PACKET_CANCELED) {
+-            cancelled = true;
+-        }
+-        if (((p->status != USB_RET_SUCCESS && p->status != USB_RET_ASYNC &&
+-              p->status != USB_RET_NAK) ||
+-             cancelled) &&
+-            p->ep->nr == 0 && p->pid == USB_TOKEN_IN) {
+-            s->addr = USB_DEVICE(s)->addr;
+-        }
+-        if (pkt) {
+-            pkt->addr = rhdr.addr;
+-            qatomic_set(&pkt->handled, 1);
+-        } else if (p->status != USB_RET_ASYNC && !cancelled) {
+-            USBTCPCompletedPacket *c = g_malloc0(sizeof(USBTCPCompletedPacket));
+-            c->p = p;
+-            c->addr = rhdr.addr;
+-            smp_wmb();
+-            WITH_QEMU_LOCK_GUARD(&s->completed_queue_mutex)
++            if (p->state == USB_PACKET_CANCELED) { cancelled = true; }
++            if (((p->status != USB_RET_SUCCESS && p->status != USB_RET_ASYNC && p->status != USB_RET_NAK) || cancelled)
++                && p->ep->nr == 0 && p->pid == USB_TOKEN_IN)
+             {
+-                QTAILQ_INSERT_TAIL(&s->completed_queue, c, queue);
+-                qemu_cond_broadcast(&s->completed_queue_cond);
++                s->addr = USB_DEVICE(s)->addr;
++            }
++            g_free(pkt);
++
++            if (p->status != USB_RET_ASYNC && !cancelled) {
++                USBTCPCompletedPacket* c = g_malloc0(sizeof(USBTCPCompletedPacket));
++                c->p                     = p;
++                c->addr                  = rhdr.addr;
++
++                WITH_QEMU_LOCK_GUARD(&s->completed_queue_mutex) { QTAILQ_INSERT_TAIL(&s->completed_queue, c, queue); }
++
++                qemu_bh_schedule(s->completed_bh);
+             }
+-            smp_wmb();
+-            qemu_bh_schedule(s->completed_bh);
++            return true;
+         }
+-        return true;
+-    }
+ 
+-    case TCP_USB_REQUEST:
+-    case TCP_USB_RESET:
+-    default:
+-        // "Invalid header type: 0x0" can happen upon closing the connection
+-        DPRINTF("%s: Invalid header type: 0x%x\n", __func__, hdr.type);
+-        usb_tcp_remote_closed(s);
+-        return false;
++        case TCP_USB_REQUEST:
++        case TCP_USB_RESET  :
++        default:
++            // "Invalid header type: 0x0" can happen upon closing the connection
++            DPRINTF("%s: Invalid header type: 0x%x\n", __func__, hdr.type);
++            usb_tcp_remote_closed_ioc(s, ioc);
++            return false;
+     }
+ }
+ 
+-static void *usb_tcp_remote_read_thread(void *opaque)
++static void coroutine_fn usb_tcp_remote_msg_loop_co(void* opaque)
+ {
+-    USBTCPRemoteState *s = opaque;
++    USBTCPRemoteState* s      = opaque;
++    g_autoptr(QIOChannel) ioc = NULL;
+ 
+-    bql_lock();
+-    while (usb_tcp_remote_read_one(s) && !s->closed) {
+-        continue;
+-    }
+-    bql_unlock();
++    if (s->ioc == NULL) { return; }
+ 
+-    return NULL;
++    ioc = QIO_CHANNEL(object_ref(s->ioc));
++
++    while (!s->closed && usb_tcp_remote_read_one(s, ioc)) { continue; }
+ }
+ 
+-static void *usb_tcp_remote_thread(void *arg)
++static void usb_tcp_remote_accept(void* opaque)
+ {
+-    USBTCPRemoteState *s = arg;
++    USBTCPRemoteState* s   = opaque;
++    Error*             err = NULL;
++    QIOChannel*        ioc;
++    int                fd;
+ 
+-    while (!s->stopped) {
+-        // thanks to Visual for noticing that
+-        qemu_mutex_lock(&s->thr_mutex);
++    fd = qemu_accept(s->socket, NULL, NULL);
++    if (fd < 0) { return; }
+ 
+-        if (s->closed) {
+-            DPRINTF("%s: waiting on accept...\n", __func__);
+-
+-            while ((s->fd = accept(s->socket, NULL, NULL)) < 0 && !s->stopped) {
+-                DPRINTF("%s: accept failed: %s.\n", __func__, strerror(errno));
+-            }
+-
+-            if (s->fd < 0) {
+-                continue;
+-            }
+-
+-            migrate_add_blocker(&s->migration_blocker, NULL);
++    if (!s->closed || s->stopped) {
++        close(fd);
++        return;
++    }
+ 
+-            s->closed = false;
++    /* the previous connection's cleanup BH may not have run yet */
++    if (s->ioc != NULL) { usb_tcp_remote_cleanup(s); }
++    if (USB_DEVICE(s)->attached) { usb_device_detach(USB_DEVICE(s)); }
+ 
+-            qemu_cond_broadcast(&s->cond);
++    ioc = qio_channel_new_fd(fd, &err);
++    if (ioc == NULL) {
++        error_report_err(err);
++        close(fd);
++        return;
++    }
+ 
+-            DPRINTF("%s: USB device accepted!\n", __func__);
++    qio_channel_set_blocking(ioc, false, NULL);
+ 
+-            bql_lock();
+-            usb_device_attach(USB_DEVICE(s), &error_abort);
+-            bql_unlock();
+-            qemu_thread_create(&s->read_thread, TYPE_USB_TCP_REMOTE ".read",
+-                               usb_tcp_remote_read_thread, s,
+-                               QEMU_THREAD_JOINABLE);
+-        }
++    s->ioc    = ioc;
++    s->addr   = 0;
++    s->closed = false;
+ 
+-        while (!s->closed) {
+-            qemu_cond_wait(&s->cond, &s->thr_mutex);
+-        }
++    DPRINTF("%s: USB device accepted!\n", __func__);
++    info_report("usb-tcp-remote: the iPhone connected");
+ 
+-        qemu_mutex_unlock(&s->thr_mutex);
++    usb_device_attach(USB_DEVICE(s), &err);
++    if (err != NULL) {
++        error_report_err(err);
++        s->closed = true;
++        s->ioc    = NULL;
++        object_unref(OBJECT(ioc));
++        return;
+     }
+ 
+-    return NULL;
++    qemu_coroutine_enter(qemu_coroutine_create(usb_tcp_remote_msg_loop_co, s));
+ }
+ 
+ #ifdef WIN32
+-static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+-{
+-    error_setg(errp, "UNIX sockets are not supported on Windows");
+-}
++static void usb_tcp_remote_bind_unix(USBTCPRemoteState* s, Error** errp)
++{ error_setg(errp, "UNIX sockets are not supported on Windows"); }
+ #else
+-static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
++static void usb_tcp_remote_bind_unix(USBTCPRemoteState* s, Error** errp)
+ {
+-    struct sockaddr_un addr = { 0 };
+-    struct stat addr_stat = { 0 };
++    struct sockaddr_un addr      = {0};
++    struct stat        addr_stat = {0};
+ 
+     if (s->conn_port != 0) {
+         error_setg(errp, "Port specified for UNIX socket, this option is for "
+@@ -415,14 +569,12 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+ 
+     if (s->conn_addr == NULL) {
+         s->conn_addr = g_strdup(USB_TCP_REMOTE_UNIX_DEFAULT);
+-        warn_report("No socket path specified, using default (`%s`).",
+-                    USB_TCP_REMOTE_UNIX_DEFAULT);
++        warn_report("No socket path specified, using default (`%s`).", USB_TCP_REMOTE_UNIX_DEFAULT);
+     }
+ 
+     if (lstat(s->conn_addr, &addr_stat) == 0) {
+         if (!S_ISSOCK(addr_stat.st_mode)) {
+-            error_setg(errp, "Existing file at `%s` is not a socket",
+-                       s->conn_addr);
++            error_setg(errp, "Existing file at `%s` is not a socket", s->conn_addr);
+             return;
+         }
+     }
+@@ -445,21 +597,19 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+     }
+     strncpy(addr.sun_path, s->conn_addr, sizeof(addr.sun_path));
+ 
+-    if (bind(s->socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++    if (bind(s->socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+         error_setg_errno(errp, errno, "Cannot bind socket");
+         return;
+     }
+ 
+-    if (chmod(s->conn_addr, 0666) < 0) {
+-        warn_report("chmod('%s') failed: %s", s->conn_addr, strerror(errno));
+-    }
++    if (chmod(s->conn_addr, 0666) < 0) { warn_report("chmod('%s') failed: %s", s->conn_addr, strerror(errno)); }
+ }
+ #endif
+ 
+-static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
++static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState* s, Error** errp)
+ {
+-    struct sockaddr_in addr = { 0 };
+-    int ret;
++    struct sockaddr_in addr = {0};
++    int                ret;
+ 
+     if (s->conn_port == 0) {
+         error_setg(errp, "Port must be specified.");
+@@ -467,14 +617,14 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+     }
+ 
+     addr.sin_family = AF_INET;
+-    if (s->conn_addr == NULL) {
+-        addr.sin_addr.s_addr = INADDR_ANY;
+-    } else {
++    if (s->conn_addr == NULL) { addr.sin_addr.s_addr = INADDR_ANY; }
++    else {
+         ret = inet_pton(AF_INET, s->conn_addr, &addr.sin_addr.s_addr);
+         if (ret == 0) {
+             error_setg(errp, "Invalid IPv4 address: %s", s->conn_addr);
+             return;
+-        } else if (ret < 0) {
++        }
++        else if (ret < 0) {
+             error_setg_errno(errp, errno, "inet_pton failed");
+             return;
+         }
+@@ -486,20 +636,18 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+         error_setg_errno(errp, errno, "Cannot open socket");
+         return;
+     }
+-    if (socket_set_nodelay(s->socket) < 0) {
+-        warn_report("Failed to set nodelay for socket: %s", strerror(errno));
+-    }
+-    if (bind(s->socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++    if (socket_set_nodelay(s->socket) < 0) { warn_report("Failed to set nodelay for socket: %s", strerror(errno)); }
++    if (bind(s->socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+         close(s->socket);
+         error_setg_errno(errp, errno, "Cannot bind socket");
+         return;
+     }
+ }
+ 
+-static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
++static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState* s, Error** errp)
+ {
+-    struct sockaddr_in6 addr = { 0 };
+-    int ret;
++    struct sockaddr_in6 addr = {0};
++    int                 ret;
+ 
+     if (s->conn_port == 0) {
+         error_setg(errp, "Port must be specified.");
+@@ -507,14 +655,14 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+     }
+ 
+     addr.sin6_family = AF_INET6;
+-    if (s->conn_addr == NULL) {
+-        addr.sin6_addr = in6addr_any;
+-    } else {
++    if (s->conn_addr == NULL) { addr.sin6_addr = in6addr_any; }
++    else {
+         ret = inet_pton(AF_INET6, s->conn_addr, &addr.sin6_addr);
+         if (ret == 0) {
+             error_setg(errp, "Invalid IPv6 address: %s", s->conn_addr);
+             return;
+-        } else if (ret < 0) {
++        }
++        else if (ret < 0) {
+             error_setg_errno(errp, errno, "inet_pton failed");
+             return;
+         }
+@@ -526,302 +674,233 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+         error_setg_errno(errp, errno, "Cannot open socket");
+         return;
+     }
+-    if (socket_set_nodelay(s->socket) < 0) {
+-        warn_report("Failed to set nodelay for socket: %s", strerror(errno));
+-    }
+-    if (bind(s->socket, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
++    if (socket_set_nodelay(s->socket) < 0) { warn_report("Failed to set nodelay for socket: %s", strerror(errno)); }
++    if (bind(s->socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+         close(s->socket);
+         error_setg_errno(errp, errno, "Cannot bind socket");
+         return;
+     }
+ }
+ 
+-static void usb_tcp_remote_realize(USBDevice *dev, Error **errp)
++static void usb_tcp_remote_realize(USBDevice* dev, Error** errp)
+ {
+-    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
++    USBTCPRemoteState* s = USB_TCP_REMOTE(dev);
+ 
+-    dev->speed = USB_SPEED_HIGH;
+-    dev->speedmask = USB_SPEED_MASK_HIGH;
+-    dev->flags |= (1 << USB_DEV_FLAG_IS_HOST);
+-    dev->auto_attach = 0;
+-
+-    qemu_cond_init(&s->cond);
+-    qemu_mutex_init(&s->thr_mutex);
+-    qemu_mutex_init(&s->request_mutex);
++    dev->speed        = USB_SPEED_HIGH;
++    dev->speedmask    = USB_SPEED_MASK_HIGH;
++    dev->flags       |= (1 << USB_DEV_FLAG_IS_HOST);
++    dev->auto_attach  = 0;
+ 
+     qemu_mutex_init(&s->queue_mutex);
+     QTAILQ_INIT(&s->queue);
+ 
+     qemu_mutex_init(&s->completed_queue_mutex);
+-    qemu_cond_init(&s->completed_queue_cond);
+     QTAILQ_INIT(&s->completed_queue);
+ 
++    qemu_mutex_init(&s->send_mutex);
++    QTAILQ_INIT(&s->send_queue);
++
+     s->completed_bh = qemu_bh_new(usb_tcp_remote_completed_bh, s);
+-    s->addr_bh = qemu_bh_new(usb_tcp_remote_update_addr_bh, s);
+-    s->cleanup_bh = qemu_bh_new(usb_tcp_remote_cleanup, s);
++    s->addr_bh      = qemu_bh_new(usb_tcp_remote_update_addr_bh, s);
++    s->cleanup_bh   = qemu_bh_new(usb_tcp_remote_cleanup, s);
++    s->nak_timer    = timer_new_ms(QEMU_CLOCK_REALTIME, usb_tcp_remote_nak_retry, s);
++    s->send_bh      = qemu_bh_new(usb_tcp_remote_send_bh, s);
+ 
+     s->socket = -1;
+-    s->fd = -1;
+     s->closed = true;
+ 
+     switch (s->conn_type) {
+-    case TCP_REMOTE_CONN_TYPE_UNIX:
+-        usb_tcp_remote_bind_unix(s, errp);
+-        break;
+-    case TCP_REMOTE_CONN_TYPE_IPV4:
+-        usb_tcp_remote_bind_ipv4(s, errp);
+-        break;
+-    case TCP_REMOTE_CONN_TYPE_IPV6:
+-        usb_tcp_remote_bind_ipv6(s, errp);
+-        break;
+-    default:
+-        assert_not_reached();
++        case TCP_REMOTE_CONN_TYPE_UNIX: usb_tcp_remote_bind_unix(s, errp); break;
++        case TCP_REMOTE_CONN_TYPE_IPV4: usb_tcp_remote_bind_ipv4(s, errp); break;
++        case TCP_REMOTE_CONN_TYPE_IPV6: usb_tcp_remote_bind_ipv6(s, errp); break;
++        default                       : assert_not_reached();
+     }
+ 
+-    if (s->socket < 0) {
+-        return;
+-    }
++    if (s->socket < 0) { return; }
+ 
+     if (listen(s->socket, 1) < 0) {
+         error_setg(errp, "Cannot listen on socket");
+         return;
+     }
+ 
+-    error_setg(&s->migration_blocker,
+-               "%s does not support migration "
+-               "while connected",
+-               TYPE_USB_TCP_REMOTE);
+-    qemu_thread_create(&s->thread, TYPE_USB_TCP_REMOTE ".thread",
+-                       &usb_tcp_remote_thread, s, QEMU_THREAD_JOINABLE);
++    qemu_set_blocking(s->socket, false, &error_abort);
++    qemu_set_fd_handler(s->socket, usb_tcp_remote_accept, NULL, s);
+ }
+ 
+-static void usb_tcp_remote_unrealize(USBDevice *dev)
++static void usb_tcp_remote_unrealize(USBDevice* dev)
+ {
+-    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
++    USBTCPRemoteState* s = USB_TCP_REMOTE(dev);
++
++    s->stopped = true;
+ 
+     if (s->socket >= 0) {
++        qemu_set_fd_handler(s->socket, NULL, NULL, NULL);
+         close(s->socket);
+         s->socket = -1;
+     }
+ 
+-    if (s->fd >= 0) {
+-        close(s->fd);
+-        s->fd = -1;
+-    }
+-
+     s->closed = true;
+ 
+-    qemu_cond_broadcast(&s->cond);
+-
+-    s->stopped = true;
+     usb_tcp_remote_clean_inflight_queue(s);
++    usb_tcp_remote_clean_send_queue(s);
+     usb_tcp_remote_clean_completed_queue(s);
++    timer_del(s->nak_timer);
++    g_list_free(s->nak_list);
++    s->nak_list = NULL;
++
++    if (s->ioc != NULL) {
++        qio_channel_shutdown(s->ioc, QIO_CHANNEL_SHUTDOWN_BOTH, NULL);
++        object_unref(OBJECT(s->ioc));
++        s->ioc = NULL;
++    }
+ }
+ 
+-static void usb_tcp_remote_handle_reset(USBDevice *dev)
++static void usb_tcp_remote_handle_reset(USBDevice* dev)
+ {
+-    tcp_usb_header_t hdr = { 0 };
+-    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
++    tcp_usb_header_t   hdr = {0};
++    USBTCPRemoteState* s   = USB_TCP_REMOTE(dev);
++    struct iovec       iov;
+ 
+-    if (s->closed) {
+-        return;
+-    }
++    if (s->closed) { return; }
+ 
+     DPRINTF("%s\n", __func__);
+     usb_tcp_remote_clean_inflight_queue(s);
+     usb_tcp_remote_clean_completed_queue(s);
+-    s->addr = 0;
++    s->addr  = 0;
+     hdr.type = TCP_USB_RESET;
+ 
+-    WITH_QEMU_LOCK_GUARD(&s->request_mutex)
+-    {
+-        usb_tcp_remote_write(s, &hdr, sizeof(hdr));
+-    }
++    iov.iov_base = &hdr;
++    iov.iov_len  = sizeof(hdr);
++    usb_tcp_remote_send(s, &iov, 1);
+ }
+ 
+-static void usb_tcp_remote_cancel_packet(USBDevice *dev, USBPacket *p)
++static void usb_tcp_remote_cancel_packet(USBDevice* dev, USBPacket* p)
+ {
+-    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
+-    USBTCPInflightPacket inflightPacket = { 0 };
+-    tcp_usb_header_t hdr = { 0 };
+-    tcp_usb_cancel_header pkt = { 0 };
+-    bool locked = bql_locked();
+-    int64_t start;
++    USBTCPRemoteState*    s   = USB_TCP_REMOTE(dev);
++    tcp_usb_header_t      hdr = {0};
++    tcp_usb_cancel_header pkt = {0};
++    struct iovec          iov[2];
+ 
+     if (p->combined) {
+         usb_combined_packet_cancel(dev, p);
+         return;
+     }
+ 
+-    if (s->closed) {
+-        return;
+-    }
++    usb_tcp_remote_drop_inflight_packet(s, p);
++    /* the host controller frees p after this; never complete it later */
++    usb_tcp_remote_forget_completed(s, p);
++    s->nak_list = g_list_remove(s->nak_list, p);
++
++    if (s->closed) { return; }
+ 
+     hdr.type = TCP_USB_CANCEL;
+     pkt.addr = s->addr;
+-    pkt.pid = p->pid;
+-    pkt.ep = p->ep->nr;
+-    pkt.id = p->id;
++    pkt.pid  = p->pid;
++    pkt.ep   = p->ep->nr;
++    pkt.id   = p->id;
+ 
+-    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep,
+-            pkt.id);
+-
+-    inflightPacket.p = p;
+-    inflightPacket.addr = dev->addr;
+-    qatomic_set(&inflightPacket.handled, 0);
+-
+-    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
+-    {
+-        QTAILQ_INSERT_TAIL(&s->queue, &inflightPacket, queue);
+-    }
++    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep, pkt.id);
+ 
+-    WITH_QEMU_LOCK_GUARD(&s->request_mutex)
+-    {
+-        usb_tcp_remote_write(s, &hdr, sizeof(hdr));
+-        usb_tcp_remote_write(s, &pkt, sizeof(pkt));
+-    }
+-    /* TODO: wait for status */
+-
+-    DPRINTF("%s: waiting for response\n", __func__);
+-    if (locked) {
+-        bql_unlock();
+-    }
+-
+-    start = get_clock_realtime();
+-    while ((qatomic_read(&inflightPacket.handled) & 1) == 0) {
+-        if (start + NANOSECONDS_PER_SECOND < get_clock_realtime()) {
+-            break;
+-        }
+-    }
+-
+-    if (locked) {
+-        bql_lock();
+-    }
+-
+-    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
+-    {
+-        QTAILQ_REMOVE(&s->queue, &inflightPacket, queue);
+-    }
++    iov[0].iov_base = &hdr;
++    iov[0].iov_len  = sizeof(hdr);
++    iov[1].iov_base = &pkt;
++    iov[1].iov_len  = sizeof(pkt);
++    usb_tcp_remote_send(s, iov, 2);
+ }
+ 
+-static void usb_tcp_remote_handle_packet(USBDevice *dev, USBPacket *p)
++static void usb_tcp_remote_send_request(USBTCPRemoteState* s, USBPacket* p)
+ {
+-    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
+-    tcp_usb_header_t hdr = { 0 };
+-    tcp_usb_request_header pkt = { 0 };
+-    USBTCPInflightPacket inflightPacket = { 0 };
+-    g_autofree void *buffer = NULL;
+-    bool locked = bql_locked();
+-
+-    if (s->closed) {
+-        p->status = USB_RET_STALL;
+-        return;
+-    }
+-
+-    hdr.type = TCP_USB_REQUEST;
+-    pkt.addr = s->addr;
+-    pkt.pid = p->pid;
+-    pkt.ep = p->ep->nr;
+-    pkt.id = p->id;
+-    pkt.stream = p->stream;
++    USBDevice*             dev            = USB_DEVICE(s);
++    tcp_usb_header_t       hdr            = {0};
++    tcp_usb_request_header pkt            = {0};
++    USBTCPInflightPacket*  inflightPacket = NULL;
++    g_autofree void*       buffer         = NULL;
++    struct iovec           iov[3];
++    int                    niov = 2;
++
++    hdr.type         = TCP_USB_REQUEST;
++    pkt.addr         = s->addr;
++    pkt.pid          = p->pid;
++    pkt.ep           = p->ep->nr;
++    pkt.id           = p->id;
++    pkt.stream       = p->stream;
+     pkt.short_not_ok = p->short_not_ok;
+-    pkt.int_req = p->int_req;
+-    pkt.length = p->iov.size - p->actual_length;
++    pkt.int_req      = p->int_req;
++    pkt.length       = p->iov.size - p->actual_length;
+ 
+-    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 " len 0x%x\n", __func__,
+-            pkt.pid, pkt.ep, pkt.id, pkt.length);
++    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 " len 0x%x\n", __func__, pkt.pid, pkt.ep, pkt.id, pkt.length);
+ 
+     if (p->pid != USB_TOKEN_IN && pkt.length) {
+         buffer = g_malloc0(pkt.length);
+         usb_packet_copy(p, buffer, pkt.length);
+         p->actual_length -= pkt.length;
+         if (p->pid == USB_TOKEN_SETUP && p->ep->nr == 0 && buffer) {
+-            struct usb_control_packet *setup =
+-                (struct usb_control_packet *)buffer;
+-            if (setup->bmRequestType == 0 &&
+-                setup->bRequest == USB_REQ_SET_ADDRESS) {
+-                s->addr = setup->wValue;
+-            }
++            struct usb_control_packet* setup = (struct usb_control_packet*)buffer;
++            if (setup->bmRequestType == 0 && setup->bRequest == USB_REQ_SET_ADDRESS) { s->addr = setup->wValue; }
+         }
+     }
+ 
+-    inflightPacket.p = p;
+-    inflightPacket.addr = dev->addr;
+-    qatomic_set(&inflightPacket.handled, 0);
+-
+-    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
+-    {
+-        QTAILQ_INSERT_TAIL(&s->queue, &inflightPacket, queue);
+-    }
+-    /* Retire the writes so that the read thread can find it */
+-    smp_wmb();
++    inflightPacket       = g_malloc0(sizeof(USBTCPInflightPacket));
++    inflightPacket->p    = p;
++    inflightPacket->addr = dev->addr;
+ 
+-    WITH_QEMU_LOCK_GUARD(&s->request_mutex)
+-    {
+-        if (usb_tcp_remote_write(s, &hdr, sizeof(hdr)) != sizeof(hdr)) {
+-            p->status = USB_RET_STALL;
+-            goto out;
+-        }
++    WITH_QEMU_LOCK_GUARD(&s->queue_mutex) { QTAILQ_INSERT_TAIL(&s->queue, inflightPacket, queue); }
+ 
+-        if (usb_tcp_remote_write(s, &pkt, sizeof(pkt)) != sizeof(pkt)) {
+-            p->status = USB_RET_STALL;
+-            goto out;
+-        }
++    iov[0].iov_base = &hdr;
++    iov[0].iov_len  = sizeof(hdr);
++    iov[1].iov_base = &pkt;
++    iov[1].iov_len  = sizeof(pkt);
+ 
+-        if (buffer) {
+-            if (usb_tcp_remote_write(s, buffer, pkt.length) < pkt.length) {
+-                p->status = USB_RET_STALL;
+-                goto out;
+-            }
+-        }
++    if (buffer) {
++        iov[2].iov_base = buffer;
++        iov[2].iov_len  = pkt.length;
++        niov            = 3;
+     }
+ 
+-    if (locked) {
+-        bql_unlock();
+-    }
+-
+-    while ((qatomic_read(&inflightPacket.handled) & 1) == 0) {
+-    }
++    usb_tcp_remote_send(s, iov, niov);
++}
+ 
+-    if (locked) {
+-        bql_lock();
+-    }
++/*
++ * Every request is answered asynchronously. A NAK ("no data yet", normal for
++ * interrupt/bulk IN polling) cannot complete an async packet (QEMU only lets
++ * an async packet finish with a final status), so such packets stay pending
++ * and are asked for again a little later - what the controller did with the
++ * synchronous NAK of cc4302a's blocking version.
++ */
++static void usb_tcp_remote_handle_packet(USBDevice* dev, USBPacket* p)
++{
++    USBTCPRemoteState* s = USB_TCP_REMOTE(dev);
+ 
+-out:
+-    if (s->addr != dev->addr && p->ep->nr == 0 && p->pid == USB_TOKEN_IN &&
+-        p->status == USB_RET_SUCCESS) {
+-        dev->addr = s->addr;
+-        trace_usb_set_addr(dev->addr);
++    if (s->closed) {
++        p->status = USB_RET_STALL;
++        return;
+     }
+ 
+-    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
+-    {
+-        QTAILQ_REMOVE(&s->queue, &inflightPacket, queue);
+-    }
++    usb_tcp_remote_send_request(s, p);
++    p->status = USB_RET_ASYNC;
+ }
+ 
+ static const Property usb_tcp_remote_dev_props[] = {
+-    DEFINE_PROP_USB_TCP_REMOTE_CONN_TYPE("conn-type", USBTCPRemoteState,
+-                                         conn_type, TCP_REMOTE_CONN_TYPE_UNIX),
++    DEFINE_PROP_USB_TCP_REMOTE_CONN_TYPE("conn-type", USBTCPRemoteState, conn_type, TCP_REMOTE_CONN_TYPE_UNIX),
+     DEFINE_PROP_STRING("conn-addr", USBTCPRemoteState, conn_addr),
+     DEFINE_PROP_UINT16("conn-port", USBTCPRemoteState, conn_port, 0),
+ };
+ 
+-static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
++static void usb_tcp_remote_dev_class_init(ObjectClass* klass, const void* data)
+ {
+-    DeviceClass *dc = DEVICE_CLASS(klass);
+-    USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
+-
+-    uc->realize = usb_tcp_remote_realize;
+-    uc->unrealize = usb_tcp_remote_unrealize;
+-    uc->handle_attach = NULL;
+-    uc->handle_detach = NULL;
+-    uc->cancel_packet = usb_tcp_remote_cancel_packet;
+-    uc->handle_reset = usb_tcp_remote_handle_reset;
++    DeviceClass*    dc = DEVICE_CLASS(klass);
++    USBDeviceClass* uc = USB_DEVICE_CLASS(klass);
++
++    uc->realize        = usb_tcp_remote_realize;
++    uc->unrealize      = usb_tcp_remote_unrealize;
++    uc->handle_attach  = NULL;
++    uc->handle_detach  = NULL;
++    uc->cancel_packet  = usb_tcp_remote_cancel_packet;
++    uc->handle_reset   = usb_tcp_remote_handle_reset;
+     uc->handle_control = NULL;
+-    uc->handle_data = NULL;
+-    uc->handle_packet = usb_tcp_remote_handle_packet;
+-    uc->product_desc = "QEMU USB Passthrough Device";
++    uc->handle_data    = NULL;
++    uc->handle_packet  = usb_tcp_remote_handle_packet;
++    uc->product_desc   = "QEMU USB Passthrough Device";
+ 
+     dc->desc = "QEMU USB Passthrough Device";
+     set_bit(DEVICE_CATEGORY_USB, dc->categories);
+@@ -829,15 +908,12 @@ static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
+ }
+ 
+ static const TypeInfo usb_tcp_remote_dev_type_info = {
+-    .name = TYPE_USB_TCP_REMOTE,
+-    .parent = TYPE_USB_DEVICE,
++    .name          = TYPE_USB_TCP_REMOTE,
++    .parent        = TYPE_USB_DEVICE,
+     .instance_size = sizeof(USBTCPRemoteState),
+-    .class_init = usb_tcp_remote_dev_class_init,
++    .class_init    = usb_tcp_remote_dev_class_init,
+ };
+ 
+-static void usb_tcp_register_types(void)
+-{
+-    type_register_static(&usb_tcp_remote_dev_type_info);
+-}
++static void usb_tcp_register_types(void) { type_register_static(&usb_tcp_remote_dev_type_info); }
+ 
+ type_init(usb_tcp_register_types)
+diff --git a/hw/usb/dev-tcp-remote.h b/hw/usb/dev-tcp-remote.h
+index a752f7a..81ef7c1 100644
+--- a/hw/usb/dev-tcp-remote.h
++++ b/hw/usb/dev-tcp-remote.h
+@@ -17,57 +17,67 @@
+  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
+-#ifndef HW_USB_DEV_TCP_REMOTE_H
+-#define HW_USB_DEV_TCP_REMOTE_H
++#pragma once
+ 
+ #include "qemu/osdep.h"
+ #include "hw/usb.h"
+ #include "hw/usb/tcp-usb.h"
++#include "io/channel.h"
++#include "qemu/timer.h"
+ 
+-typedef struct USBTCPInflightPacket {
+-    USBPacket *p;
+-    uint64_t handled;
++typedef struct USBTCPInflightPacket
++{
++    USBPacket* p;
+     QTAILQ_ENTRY(USBTCPInflightPacket) queue;
+     uint8_t addr;
+ } USBTCPInflightPacket;
+ 
+-typedef struct USBTCPCompletedPacket {
+-    USBPacket *p;
++typedef struct USBTCPCompletedPacket
++{
++    USBPacket* p;
+     QTAILQ_ENTRY(USBTCPCompletedPacket) queue;
+     uint8_t addr;
+ } USBTCPCompletedPacket;
+ 
+-struct USBTCPRemoteState {
+-    USBDevice parent_obj;
++typedef struct USBTCPRemoteMsg
++{
++    QTAILQ_ENTRY(USBTCPRemoteMsg) queue;
++    size_t  len;
++    uint8_t data[];
++} USBTCPRemoteMsg;
+ 
+-    QemuThread thread;
+-    QemuThread read_thread;
+-    QemuCond cond;
+-    QemuMutex thr_mutex;
+-    QemuMutex request_mutex;
++struct USBTCPRemoteState
++{
++    USBDevice parent_obj;
+ 
+     QemuMutex queue_mutex;
+     QTAILQ_HEAD(, USBTCPInflightPacket) queue;
+ 
+     QemuMutex completed_queue_mutex;
+-    QemuCond completed_queue_cond;
+     QTAILQ_HEAD(, USBTCPCompletedPacket) completed_queue;
+-    QEMUBH *completed_bh;
+-    QEMUBH *addr_bh;
+-    QEMUBH *cleanup_bh;
+-    Error *migration_blocker;
++
++    QemuMutex send_mutex;
++    QTAILQ_HEAD(, USBTCPRemoteMsg) send_queue;
++
++    QEMUBH* completed_bh;
++    QEMUBH* addr_bh;
++    QEMUBH* cleanup_bh;
++    QEMUBH* send_bh;
+ 
+     USBTCPRemoteConnType conn_type;
+-    char *conn_addr;
+-    uint16_t conn_port;
+-    int socket;
+-    int fd;
+-    uint8_t addr;
+-    bool closed;
+-    bool stopped;
++    char*                conn_addr;
++    uint16_t             conn_port;
++    int                  socket;
++    QIOChannel*          ioc;
++    uint8_t              addr;
++    bool                 closed;
++    bool                 stopped;
++    bool                 sending;
++
++    /* async packets the device side answered with NAK, re-sent by nak_timer */
++    GList*     nak_list;
++    QEMUTimer* nak_timer;
+ };
+ 
+ #define TYPE_USB_TCP_REMOTE "usb-tcp-remote"
+ OBJECT_DECLARE_SIMPLE_TYPE(USBTCPRemoteState, USB_TCP_REMOTE)
+-
+-#endif /* HW_USB_DEV_TCP_REMOTE_H */

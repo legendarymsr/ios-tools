@@ -1,5 +1,5 @@
 diff --git a/hw/usb/hcd-tcp.c b/hw/usb/hcd-tcp.c
-index 8d6110a..8118f9f 100644
+index 8d6110a..0f2928b 100644
 --- a/hw/usb/hcd-tcp.c
 +++ b/hw/usb/hcd-tcp.c
 @@ -29,6 +29,7 @@
@@ -76,7 +76,177 @@ index 8d6110a..8118f9f 100644
  }
  
  static ssize_t tcp_usb_read(QIOChannel *ioc, void *buf, size_t len)
-@@ -261,6 +311,17 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+@@ -131,69 +181,87 @@ static USBPort *usb_tcp_host_find_active_port(USBTCPHostState *s)
+     return &s->ports[0];
+ }
+ 
+-static void coroutine_fn usb_tcp_host_respond_packet_co(void *opaque)
++/*
++ * ios-tools: a response is snapshotted (header + IN data) synchronously,
++ * then written by a coroutine. The coroutine never looks at the USBPacket,
++ * so a packet that is cancelled or freed while an earlier write is still
++ * waiting for the write lock cannot be read after free (which corrupted the
++ * stream and made the USB-host side drop the iPhone).
++ */
++typedef struct USBTCPHostResp {
++    USBTCPHostState *s;
++    tcp_usb_header_t hdr;
++    tcp_usb_response_header resp;
++    void *buffer;
++} USBTCPHostResp;
++
++static void coroutine_fn usb_tcp_host_respond_co(void *opaque)
+ {
+-    USBTCPPacket *pkt = opaque;
+-    USBTCPHostState *s = pkt->s;
+-    USBPacket *p = &pkt->p;
+-    tcp_usb_header_t hdr = { 0 };
+-    tcp_usb_response_header resp = { 0 };
+-    g_autofree void *buffer = NULL;
+-    USBPort *port = usb_tcp_host_find_active_port(s);
++    USBTCPHostResp *r = opaque;
++    USBTCPHostState *s = r->s;
+ 
+     WITH_QEMU_LOCK_GUARD(&s->write_mutex)
+     {
+-        if (!s->closed) {
+-            hdr.type = TCP_USB_RESPONSE;
+-            resp.addr = port->dev->addr;
+-            resp.pid = p->pid;
+-            resp.ep = p->ep->nr;
+-            resp.id = p->id;
+-            resp.status = p->status;
+-            resp.length = p->iov.size;
+-
+-            if (resp.length > p->actual_length) {
+-                resp.length = p->actual_length;
+-            }
+-
+-            if (p->pid == USB_TOKEN_IN && p->status != USB_RET_ASYNC) {
+-                buffer = g_malloc(resp.length);
+-                iov_to_buf(p->iov.iov, p->iov.niov, 0, buffer, resp.length);
+-            }
+-
+-            if (!tcp_usb_write(s->ioc, &hdr, sizeof(hdr))) {
+-                usb_tcp_host_closed(s);
+-                return;
+-            }
+-
+-            if (!tcp_usb_write(s->ioc, &resp, sizeof(resp))) {
++        if (!s->closed && s->ioc != NULL) {
++            if (!tcp_usb_write(s->ioc, &r->hdr, sizeof(r->hdr)) ||
++                !tcp_usb_write(s->ioc, &r->resp, sizeof(r->resp)) ||
++                (r->buffer && !tcp_usb_write(s->ioc, r->buffer,
++                                             r->resp.length))) {
++                info_report("usb-tcp-host: writing a response failed");
+                 usb_tcp_host_closed(s);
+-                return;
+-            }
+-
+-            if (buffer) {
+-                if (!tcp_usb_write(s->ioc, buffer, resp.length)) {
+-                    usb_tcp_host_closed(s);
+-                    return;
+-                }
+             }
+         }
+     }
++    g_free(r->buffer);
++    g_free(r);
++}
+ 
+-    if (!usb_packet_is_inflight(p)) {
+-        if (pkt->buffer) {
+-            g_free(pkt->buffer);
+-        }
+-        usb_packet_cleanup(p);
+-        g_free(pkt);
+-    }
++static void usb_tcp_host_send_resp(USBTCPHostState *s, int pid, uint8_t ep,
++                                   uint64_t id, uint8_t addr, int status,
++                                   const struct iovec *iov, int niov,
++                                   uint32_t length)
++{
++    USBTCPHostResp *r = g_new0(USBTCPHostResp, 1);
++
++    r->s = s;
++    r->hdr.type = TCP_USB_RESPONSE;
++    r->resp.addr = addr;
++    r->resp.pid = pid;
++    r->resp.ep = ep;
++    r->resp.id = id;
++    r->resp.status = status;
++    r->resp.length = length;
++    if (pid == USB_TOKEN_IN && length > 0) {
++        r->buffer = g_malloc(length);
++        iov_to_buf(iov, niov, 0, r->buffer, length);
++    }
++    qemu_coroutine_enter(qemu_coroutine_create(usb_tcp_host_respond_co, r));
++}
++
++static void usb_tcp_host_free_packet(USBTCPPacket *pkt)
++{
++    g_free(pkt->buffer);
++    usb_packet_cleanup(&pkt->p);
++    g_free(pkt);
+ }
+ 
+ static void usb_tcp_host_respond_packet(USBTCPHostState *s, USBTCPPacket *pkt)
+ {
+-    Coroutine *co = NULL;
+-    co = qemu_coroutine_create(usb_tcp_host_respond_packet_co, pkt);
+-    qemu_coroutine_enter(co);
++    USBPacket *p = &pkt->p;
++    USBPort *port = usb_tcp_host_find_active_port(s);
++    uint32_t length;
++
++    /* still pending: the final status follows via the complete callback */
++    if (p->status == USB_RET_ASYNC && usb_packet_is_inflight(p)) {
++        return;
++    }
++    length = MIN(p->iov.size, p->actual_length);
++    usb_tcp_host_send_resp(s, p->pid, p->ep->nr, p->id,
++                           (port && port->dev) ? port->dev->addr : pkt->addr,
++                           p->status, p->iov.iov, p->iov.niov, length);
++    if (!usb_packet_is_inflight(p)) {
++        usb_tcp_host_free_packet(pkt);
++    }
+ }
+ 
+ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+@@ -228,11 +296,27 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+ 
+             DPRINTF("%s: TCP_USB_REQUEST pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
+                     __func__, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id);
+-            ep = usb_ep_get(port->dev, pkt_hdr.pid, pkt_hdr.ep);
++            ep = (port->dev != NULL) ?
++                 usb_ep_get(port->dev, pkt_hdr.pid, pkt_hdr.ep) : NULL;
+             if (ep == NULL) {
+-                fprintf(stderr, "%s: TCP_USB_REQUEST unknown EP\n", __func__);
+-                usb_tcp_host_closed(s);
+-                return;
++                /*
++                 * ios-tools: iOS dropped or reconfigured USB while this
++                 * request was on the wire. Skip its data and answer NODEV;
++                 * closing the link here made the USB-host VM lose the iPhone.
++                 */
++                if (pkt_hdr.pid != USB_TOKEN_IN && pkt_hdr.length > 0) {
++                    buffer = g_malloc(pkt_hdr.length);
++                    if (unlikely(tcp_usb_read(ioc, buffer, pkt_hdr.length) !=
++                                 pkt_hdr.length)) {
++                        usb_tcp_host_closed(s);
++                        return;
++                    }
++                }
++                DPRINTF("%s: TCP_USB_REQUEST for a missing device/EP\n",
++                        __func__);
++                usb_tcp_host_send_resp(s, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id,
++                                       pkt_hdr.addr, USB_RET_NODEV, NULL, 0, 0);
++                break;
+             }
+ 
+             usb_packet_init(&pkt->p);
+@@ -261,6 +345,17 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
              pkt->addr = pkt_hdr.addr;
              assert_true(bql_locked());
  
@@ -94,7 +264,48 @@ index 8d6110a..8118f9f 100644
              usb_handle_packet(pkt->dev, &pkt->p);
              usb_tcp_host_respond_packet(s, pkt);
              g_steal_pointer(&pkt);
-@@ -305,12 +366,17 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+@@ -285,32 +380,51 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+                     pkt_hdr.pid, pkt_hdr.ep);
+ 
+             assert_true(bql_locked());
+-            p = usb_ep_find_packet_by_id(port->dev, pkt_hdr.pid, pkt_hdr.ep,
+-                                         pkt_hdr.id);
++            p = (port->dev != NULL) ?
++                usb_ep_find_packet_by_id(port->dev, pkt_hdr.pid, pkt_hdr.ep,
++                                         pkt_hdr.id) : NULL;
+             if (p) {
+                 pkt = container_of(p, USBTCPPacket, p);
+-                usb_cancel_packet(&pkt->p);
+                 DPRINTF("%s: TCP_USB_CANCEL: packet"
+                         " pid: 0x%x ep: %d id: 0x%" PRIx64 " len: 0x%x\n",
+                         __func__, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id,
+                         p->actual_length);
+-                usb_tcp_host_respond_packet(s, pkt);
++                usb_cancel_packet(p);
++                usb_tcp_host_free_packet(pkt);
+             } else {
+-                warn_report("%s: TCP_USB_CANCEL: packet"
+-                            " pid: 0x%x ep: %d id: 0x%" PRIx64 " not found",
+-                            __func__, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id);
++                /*
++                 * ios-tools: normal race - the packet was already answered
++                 * (e.g. NAK) before the cancel arrived.
++                 */
++                DPRINTF("%s: TCP_USB_CANCEL: packet"
++                        " pid: 0x%x ep: %d id: 0x%" PRIx64 " already done\n",
++                        __func__, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id);
+             }
++            /*
++             * Always acknowledge, after anything already sent for this id:
++             * the USB-host side drops every response for a cancelled id
++             * until this ack, so a late answer can never complete a newer
++             * packet that reuses the id.
++             */
++            usb_tcp_host_send_resp(s, pkt_hdr.pid, pkt_hdr.ep, pkt_hdr.id,
++                                   pkt_hdr.addr, USB_RET_REMOVE_FROM_QUEUE,
++                                   NULL, 0, 0);
+             break;
+         }
          case TCP_USB_RESET:
              DPRINTF("%s: TCP_USB_RESET\n", __func__);
              assert_true(bql_locked());
@@ -115,7 +326,7 @@ index 8d6110a..8118f9f 100644
          }
      }
  
-@@ -480,9 +546,21 @@ static void usb_tcp_host_attach(USBPort *port)
+@@ -480,9 +594,21 @@ static void usb_tcp_host_attach(USBPort *port)
      }
  
      if (port->dev == NULL || !port->dev->attached) {
@@ -137,7 +348,7 @@ index 8d6110a..8118f9f 100644
      switch (s->conn_type) {
      case TCP_REMOTE_CONN_TYPE_UNIX:
          sock = usb_tcp_host_connect_unix(s, &err);
-@@ -498,9 +576,18 @@ static void usb_tcp_host_attach(USBPort *port)
+@@ -498,9 +624,18 @@ static void usb_tcp_host_attach(USBPort *port)
      }
  
      if (sock == -1) {

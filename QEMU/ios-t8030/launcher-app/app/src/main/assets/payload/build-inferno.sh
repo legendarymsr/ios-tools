@@ -171,11 +171,12 @@ fi
 # a stale "already handled" DART interrupt under MTTCG (one cause of the
 # "t8020dart invalid lock state" panic). Again one file + relink.
 HERE=$(cd "$(dirname "$0")" && pwd)
-PATCH_ID="ios-tools-patches-6"
+PATCH_ID="ios-tools-patches-7"
 # Superseded patches from earlier versions are undone first:
 #   v1.2.7 inferno-usb-tcp-remote-fix.patch, v1.2.9 inferno-usb-tcp-remote-async-v129.patch,
 #   v1.2.10 inferno-usb-tcp-remote-async-v1210.patch,
-#   v1.2.10/11 inferno-usb-tcp-host-retry-v1211.patch
+#   v1.2.10/11 inferno-usb-tcp-host-retry-v1211.patch,
+#   v1.3.0 inferno-usb-tcp-remote-async-v130.patch + inferno-usb-tcp-host-retry-v130.patch
 # Current set:
 #   inferno-usb-tcp-remote-async.patch  USB-host side: Inferno dev's async
 #       rewrite (7900ece) + crash fixes + "iPhone connected/disconnected" log
@@ -185,9 +186,12 @@ PATCH_ID="ios-tools-patches-6"
 #       USB, and never again; also reconnects after a USB-host VM restart) and
 #       log every step ("usb-tcp-host: ...") in inferno.log; v1.3.0: answer
 #       NODEV instead of asserting when iOS turned USB off mid-request, no
-#       abort on a corrupt stream
+#       abort on a corrupt stream; v1.3.1: responses are snapshotted before
+#       the write (no use-after-free when a packet is cancelled meanwhile),
+#       a request for a missing device/EP gets NODEV instead of closing the
+#       link, every cancel is acked so stale answers are dropped
 #   inferno-dart-error-lock.patch       SEP DART error clear under the lock
-for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch inferno-usb-tcp-remote-async-v1210.patch inferno-usb-tcp-host-retry-v1211.patch; do
+for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch inferno-usb-tcp-remote-async-v1210.patch inferno-usb-tcp-host-retry-v1211.patch inferno-usb-tcp-remote-async-v130.patch inferno-usb-tcp-host-retry-v130.patch; do
   of="$HERE/$old"
   # the current version may contain the old one's hunks: never undo an old
   # patch when its replacement is already applied

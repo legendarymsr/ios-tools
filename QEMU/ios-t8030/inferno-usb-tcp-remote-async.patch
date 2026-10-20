@@ -1,5 +1,5 @@
 diff --git a/hw/usb/dev-tcp-remote.c b/hw/usb/dev-tcp-remote.c
-index 5639ab6..25109e6 100644
+index 5639ab6..23e64a7 100644
 --- a/hw/usb/dev-tcp-remote.c
 +++ b/hw/usb/dev-tcp-remote.c
 @@ -22,37 +22,40 @@
@@ -55,12 +55,12 @@ index 5639ab6..25109e6 100644
              return p;
          }
      }
-@@ -60,111 +63,222 @@ usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
+@@ -60,111 +63,267 @@ usb_tcp_remote_find_inflight_packet(USBTCPRemoteState *s, int pid, uint8_t ep,
      return NULL;
  }
  
 -static void usb_tcp_remote_clean_inflight_queue(USBTCPRemoteState *s)
-+static void usb_tcp_remote_drop_inflight_packet(USBTCPRemoteState* s, USBPacket* packet)
++static bool usb_tcp_remote_drop_inflight_packet(USBTCPRemoteState* s, USBPacket* packet)
  {
 -    USBTCPInflightPacket *p;
 +    USBTCPInflightPacket* p;
@@ -74,9 +74,52 @@ index 5639ab6..25109e6 100644
 +        if (p->p == packet) {
 +            QTAILQ_REMOVE(&s->queue, p, queue);
 +            g_free(p);
-+            return;
++            return true;
 +        }
 +    }
++    return false;
++}
++
++/*
++ * ios-tools: ids cancelled on the iOS side whose cancel ack
++ * (USB_RET_REMOVE_FROM_QUEUE) has not arrived yet. Every response for such an
++ * id is stale and dropped, so it can never complete a newer packet that the
++ * guest submitted with the same id (xHCI reuses TRB addresses as ids).
++ */
++typedef struct USBTCPDrain {
++    int      pid;
++    uint8_t  ep;
++    uint64_t id;
++    unsigned count;
++} USBTCPDrain;
++
++static USBTCPDrain* usb_tcp_remote_find_drain(USBTCPRemoteState* s, int pid, uint8_t ep, uint64_t id)
++{
++    for (GList* l = s->drain_list; l != NULL; l = l->next) {
++        USBTCPDrain* d = l->data;
++        if (d->pid == pid && d->ep == ep && d->id == id) { return d; }
++    }
++    return NULL;
++}
++
++static void usb_tcp_remote_add_drain(USBTCPRemoteState* s, int pid, uint8_t ep, uint64_t id)
++{
++    USBTCPDrain* d = usb_tcp_remote_find_drain(s, pid, ep, id);
++
++    if (d == NULL) {
++        d      = g_new0(USBTCPDrain, 1);
++        d->pid = pid;
++        d->ep  = ep;
++        d->id  = id;
++        s->drain_list = g_list_prepend(s->drain_list, d);
++    }
++    d->count++;
++}
++
++static void usb_tcp_remote_clear_drain(USBTCPRemoteState* s)
++{
++    g_list_free_full(s->drain_list, g_free);
++    s->drain_list = NULL;
 +}
 +
 +static void usb_tcp_remote_clean_inflight_queue(USBTCPRemoteState* s)
@@ -98,11 +141,14 @@ index 5639ab6..25109e6 100644
 +         */
 +        (void)dev;
 +        g_free(p);
-+    }
-+}
-+
+     }
+ }
+ 
+-static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState *s)
 +static void usb_tcp_remote_clean_send_queue(USBTCPRemoteState* s)
-+{
+ {
+-    USBTCPCompletedPacket *p;
+-    USBDevice *dev = USB_DEVICE(s);
 +    USBTCPRemoteMsg* m;
 +
 +    QEMU_LOCK_GUARD(&s->send_mutex);
@@ -111,14 +157,11 @@ index 5639ab6..25109e6 100644
 +        m = QTAILQ_FIRST(&s->send_queue);
 +        QTAILQ_REMOVE(&s->send_queue, m, queue);
 +        g_free(m);
-     }
- }
- 
--static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState *s)
++    }
++}
++
 +static void usb_tcp_remote_clean_completed_queue(USBTCPRemoteState* s)
- {
--    USBTCPCompletedPacket *p;
--    USBDevice *dev = USB_DEVICE(s);
++{
 +    USBTCPCompletedPacket* p;
 +    USBDevice*             dev = USB_DEVICE(s);
  
@@ -153,12 +196,12 @@ index 5639ab6..25109e6 100644
 +    if (p->status == USB_RET_REMOVE_FROM_QUEUE) {
 +        if (usb_packet_is_inflight(p)) { dev->port->ops->complete(dev->port, p); }
 +        return true;
-     }
++    }
 +    if (p->state != USB_PACKET_ASYNC) {
 +        warn_report("usb-tcp-remote: dropping a response for a packet in state %d (ep %d id 0x%" PRIx64 ")",
 +                    p->state, p->ep->nr, p->id);
 +        return true;
-+    }
+     }
 +    if (!p->stream && QTAILQ_FIRST(&p->ep->queue) != p) { return false; }
 +    usb_packet_complete(dev, p);
 +    return true;
@@ -204,10 +247,12 @@ index 5639ab6..25109e6 100644
 +    timer_del(s->nak_timer);
 +    g_list_free(s->nak_list);
 +    s->nak_list = NULL;
++    usb_tcp_remote_clear_drain(s);
  
 -    qemu_cond_broadcast(&s->cond);
 -    migrate_del_blocker(&s->migration_blocker);
 +    if (USB_DEVICE(s)->attached) { usb_device_detach(USB_DEVICE(s)); }
++    info_report("usb-tcp-remote: waiting for the iPhone to reconnect");
  }
  
 -static void usb_tcp_remote_update_addr_bh(void *opaque)
@@ -308,9 +353,7 @@ index 5639ab6..25109e6 100644
 +static void usb_tcp_remote_send_request(USBTCPRemoteState* s, USBPacket* p);
 +
 +static void usb_tcp_remote_nak_retry(void* opaque)
- {
--    if (s->fd == -1) {
--        return;
++{
 +    USBTCPRemoteState* s    = opaque;
 +    GList*             list = s->nak_list;
 +    GList*             l;
@@ -326,7 +369,9 @@ index 5639ab6..25109e6 100644
 +}
 +
 +static void usb_tcp_remote_nak_later(USBTCPRemoteState* s, USBPacket* p)
-+{
+ {
+-    if (s->fd == -1) {
+-        return;
 +    if (g_list_find(s->nak_list, p) == NULL) { s->nak_list = g_list_append(s->nak_list, p); }
 +    if (!timer_pending(s->nak_timer)) {
 +        timer_mod(s->nak_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + USB_TCP_REMOTE_NAK_RETRY_MS);
@@ -339,7 +384,7 @@ index 5639ab6..25109e6 100644
  
      s->closed = true;
      smp_wmb();
-@@ -175,237 +289,277 @@ static void usb_tcp_remote_closed(USBTCPRemoteState *s)
+@@ -175,237 +334,297 @@ static void usb_tcp_remote_closed(USBTCPRemoteState *s)
      qemu_bh_schedule(s->cleanup_bh);
  }
  
@@ -354,7 +399,9 @@ index 5639ab6..25109e6 100644
 -    if (locked) {
 -        bql_unlock();
 -    }
--
++    if (ioc == s->ioc) { usb_tcp_remote_closed(s); }
++}
+ 
 -    while (n < length) {
 -        ret = recv(s->fd, buffer + n, length - n, 0);
 -        if (ret <= 0) {
@@ -364,18 +411,15 @@ index 5639ab6..25109e6 100644
 -            usb_tcp_remote_closed(s);
 -            return -errno;
 -        }
-+    if (ioc == s->ioc) { usb_tcp_remote_closed(s); }
-+}
- 
--        n += ret;
--    }
 +static ssize_t coroutine_fn usb_tcp_remote_read(USBTCPRemoteState* s, QIOChannel* ioc, void* buffer,
 +                                                unsigned int length)
 +{
 +    struct iovec iov = {.iov_base = buffer, .iov_len = length};
 +    Error*       err = NULL;
 +    ssize_t      ret;
-+
+ 
+-        n += ret;
+-    }
 +    ret = qio_channel_readv_full_all_eof(ioc, &iov, 1, NULL, 0, 0, &err);
 +
 +    if (err) { error_report_err(err); }
@@ -383,6 +427,9 @@ index 5639ab6..25109e6 100644
 -    if (locked) {
 -        bql_lock();
 +    if (ret <= 0) {
++        if (ioc == s->ioc && !s->closed) {
++            info_report("usb-tcp-remote: the iOS VM closed the link (%s)", ret == 0 ? "EOF" : "read error");
++        }
 +        usb_tcp_remote_closed_ioc(s, ioc);
 +        return -1;
      }
@@ -397,15 +444,14 @@ index 5639ab6..25109e6 100644
  {
 -    int ret = 0;
 -    unsigned int n = 0;
--
++    USBTCPRemoteState* s      = opaque;
++    g_autoptr(QIOChannel) ioc = NULL;
+ 
 -    while (n < length) {
 -        ret = send(s->fd, (char *)buffer + n, length - n, 0);
 -        if (ret <= 0) {
 -            usb_tcp_remote_closed(s);
 -            return -errno;
-+    USBTCPRemoteState* s      = opaque;
-+    g_autoptr(QIOChannel) ioc = NULL;
-+
 +    if (s->ioc == NULL) { return; }
 +
 +    ioc        = QIO_CHANNEL(object_ref(s->ioc));
@@ -429,6 +475,7 @@ index 5639ab6..25109e6 100644
 +
 +        if (qio_channel_writev_full_all(ioc, &iov, 1, NULL, 0, 0, &err) < 0) {
 +            if (err) { error_report_err(err); }
++            info_report("usb-tcp-remote: writing to the iOS VM failed");
 +            g_free(m);
 +            usb_tcp_remote_closed_ioc(s, ioc);
 +            break;
@@ -509,11 +556,6 @@ index 5639ab6..25109e6 100644
 -        if (p == NULL) {
 -            warn_report("%s: TCP_USB_RESPONSE "
 -                        "Invalid packet pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
--                        __func__, rhdr.pid, rhdr.ep, rhdr.id);
--            //__builtin_dump_struct(&rhdr, &printf);
--            /* likely canceled */
--            /* When an EP is aborted, all of its queued packets are removed */
--        }
 +            /*
 +             * Read the IN payload before looking the packet up: the read can
 +             * yield to the main loop, which may cancel and free the packet.
@@ -523,39 +565,56 @@ index 5639ab6..25109e6 100644
 +                inbuf = g_malloc(rhdr.length);
 +                if (usb_tcp_remote_read(s, ioc, inbuf, rhdr.length) < rhdr.length) { return false; }
 +            }
++
++            {
++                USBTCPDrain* d = usb_tcp_remote_find_drain(s, rhdr.pid, rhdr.ep, rhdr.id);
++                if (d != NULL) {
++                    if (rhdr.status == USB_RET_REMOVE_FROM_QUEUE && --d->count == 0) {
++                        s->drain_list = g_list_remove(s->drain_list, d);
++                        g_free(d);
++                    }
++                    DPRINTF("%s: stale response for cancelled id 0x%" PRIx64 " dropped\n", __func__, rhdr.id);
++                    return true;
++                }
++                if (rhdr.status == USB_RET_REMOVE_FROM_QUEUE) { return true; }
++            }
++            /* only answer packets that are really in flight: no id lookup */
++            pkt = usb_tcp_remote_take_inflight_packet(s, rhdr.pid, rhdr.ep, rhdr.id);
++            if (pkt != NULL) { p = pkt->p; }
++            DPRINTF("%s: TCP_USB_RESPONSE "
++                    "Received packet pid: 0x%x ep: %d id: 0x%" PRIx64 " status: %d\n",
++                    __func__, rhdr.pid, rhdr.ep, rhdr.id, rhdr.status);
++
++            if (p == NULL) {
++                DPRINTF("%s: TCP_USB_RESPONSE "
++                        "for a packet no longer in flight pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
+                         __func__, rhdr.pid, rhdr.ep, rhdr.id);
+-            //__builtin_dump_struct(&rhdr, &printf);
+-            /* likely canceled */
+-            /* When an EP is aborted, all of its queued packets are removed */
+-        }
++                //__builtin_dump_struct(&rhdr, &printf);
++                /* likely canceled */
++                /* When an EP is aborted, all of its queued packets are removed */
++            }
  
 -        if (rhdr.length > 0 && rhdr.status != USB_RET_ASYNC) {
 -            g_autofree void *buffer = g_malloc(rhdr.length);
 -            if (rhdr.pid == USB_TOKEN_IN) {
 -                if (usb_tcp_remote_read(s, buffer, rhdr.length) < rhdr.length) {
 -                    return false;
--                }
--                if (p) {
--                    usb_packet_copy(p, buffer, rhdr.length);
-+            pkt = usb_tcp_remote_take_inflight_packet(s, rhdr.pid, rhdr.ep, rhdr.id);
-+            if (pkt == NULL) { p = usb_ep_find_packet_by_id(USB_DEVICE(s), rhdr.pid, rhdr.ep, rhdr.id); }
-+            else {
-+                p = pkt->p;
-+            }
-+            DPRINTF("%s: TCP_USB_RESPONSE "
-+                    "Received packet pid: 0x%x ep: %d id: 0x%" PRIx64 " status: %d\n",
-+                    __func__, rhdr.pid, rhdr.ep, rhdr.id, rhdr.status);
-+
-+            if (p == NULL) {
-+                warn_report("%s: TCP_USB_RESPONSE "
-+                            "Invalid packet pid: 0x%x ep: %d id: 0x%" PRIx64 "\n",
-+                            __func__, rhdr.pid, rhdr.ep, rhdr.id);
-+                //__builtin_dump_struct(&rhdr, &printf);
-+                /* likely canceled */
-+                /* When an EP is aborted, all of its queued packets are removed */
-+            }
-+
 +            if (p != NULL && p->state == USB_PACKET_ASYNC
 +                && (rhdr.status == USB_RET_NAK || rhdr.status == USB_RET_ASYNC))
 +            {
++                if (rhdr.status == USB_RET_ASYNC) {
++                    /* the device side keeps it, its final response follows */
++                    WITH_QEMU_LOCK_GUARD(&s->queue_mutex) { QTAILQ_INSERT_TAIL(&s->queue, pkt, queue); }
++                    return true;
+                 }
+-                if (p) {
+-                    usb_packet_copy(p, buffer, rhdr.length);
 +                g_free(pkt);
-+                /* ASYNC: the device side keeps it, its final response follows */
-+                if (rhdr.status == USB_RET_NAK) { usb_tcp_remote_nak_later(s, p); }
++                usb_tcp_remote_nak_later(s, p);
 +                return true;
 +            }
 +            if (p != NULL) {
@@ -670,7 +729,9 @@ index 5639ab6..25109e6 100644
 +        case TCP_USB_RESET  :
 +        default:
 +            // "Invalid header type: 0x0" can happen upon closing the connection
-+            DPRINTF("%s: Invalid header type: 0x%x\n", __func__, hdr.type);
++            if (ioc == s->ioc && !s->closed) {
++                info_report("usb-tcp-remote: unexpected message type 0x%x from the iOS VM, dropping the link", hdr.type);
++            }
 +            usb_tcp_remote_closed_ioc(s, ioc);
 +            return false;
      }
@@ -700,20 +761,20 @@ index 5639ab6..25109e6 100644
 +static void usb_tcp_remote_accept(void* opaque)
  {
 -    USBTCPRemoteState *s = arg;
+-
+-    while (!s->stopped) {
+-        // thanks to Visual for noticing that
+-        qemu_mutex_lock(&s->thr_mutex);
 +    USBTCPRemoteState* s   = opaque;
 +    Error*             err = NULL;
 +    QIOChannel*        ioc;
 +    int                fd;
  
--    while (!s->stopped) {
--        // thanks to Visual for noticing that
--        qemu_mutex_lock(&s->thr_mutex);
+-        if (s->closed) {
+-            DPRINTF("%s: waiting on accept...\n", __func__);
 +    fd = qemu_accept(s->socket, NULL, NULL);
 +    if (fd < 0) { return; }
  
--        if (s->closed) {
--            DPRINTF("%s: waiting on accept...\n", __func__);
--
 -            while ((s->fd = accept(s->socket, NULL, NULL)) < 0 && !s->stopped) {
 -                DPRINTF("%s: accept failed: %s.\n", __func__, strerror(errno));
 -            }
@@ -721,19 +782,17 @@ index 5639ab6..25109e6 100644
 -            if (s->fd < 0) {
 -                continue;
 -            }
--
--            migrate_add_blocker(&s->migration_blocker, NULL);
 +    if (!s->closed || s->stopped) {
 +        close(fd);
 +        return;
 +    }
  
--            s->closed = false;
+-            migrate_add_blocker(&s->migration_blocker, NULL);
 +    /* the previous connection's cleanup BH may not have run yet */
 +    if (s->ioc != NULL) { usb_tcp_remote_cleanup(s); }
 +    if (USB_DEVICE(s)->attached) { usb_device_detach(USB_DEVICE(s)); }
  
--            qemu_cond_broadcast(&s->cond);
+-            s->closed = false;
 +    ioc = qio_channel_new_fd(fd, &err);
 +    if (ioc == NULL) {
 +        error_report_err(err);
@@ -741,8 +800,13 @@ index 5639ab6..25109e6 100644
 +        return;
 +    }
  
--            DPRINTF("%s: USB device accepted!\n", __func__);
+-            qemu_cond_broadcast(&s->cond);
 +    qio_channel_set_blocking(ioc, false, NULL);
+ 
+-            DPRINTF("%s: USB device accepted!\n", __func__);
++    s->ioc    = ioc;
++    s->addr   = 0;
++    s->closed = false;
  
 -            bql_lock();
 -            usb_device_attach(USB_DEVICE(s), &error_abort);
@@ -751,16 +815,13 @@ index 5639ab6..25109e6 100644
 -                               usb_tcp_remote_read_thread, s,
 -                               QEMU_THREAD_JOINABLE);
 -        }
-+    s->ioc    = ioc;
-+    s->addr   = 0;
-+    s->closed = false;
++    DPRINTF("%s: USB device accepted!\n", __func__);
++    info_report("usb-tcp-remote: the iPhone connected");
  
 -        while (!s->closed) {
 -            qemu_cond_wait(&s->cond, &s->thr_mutex);
 -        }
-+    DPRINTF("%s: USB device accepted!\n", __func__);
-+    info_report("usb-tcp-remote: the iPhone connected");
- 
+-
 -        qemu_mutex_unlock(&s->thr_mutex);
 +    usb_device_attach(USB_DEVICE(s), &err);
 +    if (err != NULL) {
@@ -793,7 +854,7 @@ index 5639ab6..25109e6 100644
  
      if (s->conn_port != 0) {
          error_setg(errp, "Port specified for UNIX socket, this option is for "
-@@ -415,14 +569,12 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+@@ -415,14 +634,12 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
  
      if (s->conn_addr == NULL) {
          s->conn_addr = g_strdup(USB_TCP_REMOTE_UNIX_DEFAULT);
@@ -810,7 +871,7 @@ index 5639ab6..25109e6 100644
              return;
          }
      }
-@@ -445,21 +597,19 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
+@@ -445,21 +662,19 @@ static void usb_tcp_remote_bind_unix(USBTCPRemoteState *s, Error **errp)
      }
      strncpy(addr.sun_path, s->conn_addr, sizeof(addr.sun_path));
  
@@ -837,7 +898,7 @@ index 5639ab6..25109e6 100644
  
      if (s->conn_port == 0) {
          error_setg(errp, "Port must be specified.");
-@@ -467,14 +617,14 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+@@ -467,14 +682,14 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
      }
  
      addr.sin_family = AF_INET;
@@ -856,7 +917,7 @@ index 5639ab6..25109e6 100644
              error_setg_errno(errp, errno, "inet_pton failed");
              return;
          }
-@@ -486,20 +636,18 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
+@@ -486,20 +701,18 @@ static void usb_tcp_remote_bind_ipv4(USBTCPRemoteState *s, Error **errp)
          error_setg_errno(errp, errno, "Cannot open socket");
          return;
      }
@@ -882,7 +943,7 @@ index 5639ab6..25109e6 100644
  
      if (s->conn_port == 0) {
          error_setg(errp, "Port must be specified.");
-@@ -507,14 +655,14 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+@@ -507,14 +720,14 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
      }
  
      addr.sin6_family = AF_INET6;
@@ -901,7 +962,7 @@ index 5639ab6..25109e6 100644
              error_setg_errno(errp, errno, "inet_pton failed");
              return;
          }
-@@ -526,302 +674,233 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
+@@ -526,302 +739,238 @@ static void usb_tcp_remote_bind_ipv6(USBTCPRemoteState *s, Error **errp)
          error_setg_errno(errp, errno, "Cannot open socket");
          return;
      }
@@ -921,13 +982,13 @@ index 5639ab6..25109e6 100644
 +static void usb_tcp_remote_realize(USBDevice* dev, Error** errp)
  {
 -    USBTCPRemoteState *s = USB_TCP_REMOTE(dev);
-+    USBTCPRemoteState* s = USB_TCP_REMOTE(dev);
- 
+-
 -    dev->speed = USB_SPEED_HIGH;
 -    dev->speedmask = USB_SPEED_MASK_HIGH;
 -    dev->flags |= (1 << USB_DEV_FLAG_IS_HOST);
 -    dev->auto_attach = 0;
--
++    USBTCPRemoteState* s = USB_TCP_REMOTE(dev);
+ 
 -    qemu_cond_init(&s->cond);
 -    qemu_mutex_init(&s->thr_mutex);
 -    qemu_mutex_init(&s->request_mutex);
@@ -1086,35 +1147,40 @@ index 5639ab6..25109e6 100644
 -    if (s->closed) {
 -        return;
 -    }
-+    usb_tcp_remote_drop_inflight_packet(s, p);
++    bool inflight = usb_tcp_remote_drop_inflight_packet(s, p);
 +    /* the host controller frees p after this; never complete it later */
 +    usb_tcp_remote_forget_completed(s, p);
 +    s->nak_list = g_list_remove(s->nak_list, p);
 +
-+    if (s->closed) { return; }
++    /*
++     * ios-tools: a packet waiting for its NAK re-poll, or already answered,
++     * is not on the iOS side; cancelling it there only raced ("not found").
++     */
++    if (s->closed || !inflight) { return; }
++    usb_tcp_remote_add_drain(s, p->pid, p->ep->nr, p->id);
  
      hdr.type = TCP_USB_CANCEL;
      pkt.addr = s->addr;
 -    pkt.pid = p->pid;
 -    pkt.ep = p->ep->nr;
 -    pkt.id = p->id;
+-
+-    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep,
+-            pkt.id);
 +    pkt.pid  = p->pid;
 +    pkt.ep   = p->ep->nr;
 +    pkt.id   = p->id;
  
--    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep,
--            pkt.id);
--
 -    inflightPacket.p = p;
 -    inflightPacket.addr = dev->addr;
 -    qatomic_set(&inflightPacket.handled, 0);
--
++    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep, pkt.id);
+ 
 -    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
 -    {
 -        QTAILQ_INSERT_TAIL(&s->queue, &inflightPacket, queue);
 -    }
-+    DPRINTF("%s: pid: 0x%x ep %d id 0x%" PRIx64 "\n", __func__, pkt.pid, pkt.ep, pkt.id);
- 
+-
 -    WITH_QEMU_LOCK_GUARD(&s->request_mutex)
 -    {
 -        usb_tcp_remote_write(s, &hdr, sizeof(hdr));
@@ -1213,17 +1279,17 @@ index 5639ab6..25109e6 100644
 -    inflightPacket.p = p;
 -    inflightPacket.addr = dev->addr;
 -    qatomic_set(&inflightPacket.handled, 0);
--
++    inflightPacket       = g_malloc0(sizeof(USBTCPInflightPacket));
++    inflightPacket->p    = p;
++    inflightPacket->addr = dev->addr;
+ 
 -    WITH_QEMU_LOCK_GUARD(&s->queue_mutex)
 -    {
 -        QTAILQ_INSERT_TAIL(&s->queue, &inflightPacket, queue);
 -    }
 -    /* Retire the writes so that the read thread can find it */
 -    smp_wmb();
-+    inflightPacket       = g_malloc0(sizeof(USBTCPInflightPacket));
-+    inflightPacket->p    = p;
-+    inflightPacket->addr = dev->addr;
- 
+-
 -    WITH_QEMU_LOCK_GUARD(&s->request_mutex)
 -    {
 -        if (usb_tcp_remote_write(s, &hdr, sizeof(hdr)) != sizeof(hdr)) {
@@ -1333,7 +1399,7 @@ index 5639ab6..25109e6 100644
  
      dc->desc = "QEMU USB Passthrough Device";
      set_bit(DEVICE_CATEGORY_USB, dc->categories);
-@@ -829,15 +908,12 @@ static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
+@@ -829,15 +978,12 @@ static void usb_tcp_remote_dev_class_init(ObjectClass *klass, const void *data)
  }
  
  static const TypeInfo usb_tcp_remote_dev_type_info = {
@@ -1354,10 +1420,10 @@ index 5639ab6..25109e6 100644
  
  type_init(usb_tcp_register_types)
 diff --git a/hw/usb/dev-tcp-remote.h b/hw/usb/dev-tcp-remote.h
-index a752f7a..81ef7c1 100644
+index a752f7a..227c9ec 100644
 --- a/hw/usb/dev-tcp-remote.h
 +++ b/hw/usb/dev-tcp-remote.h
-@@ -17,57 +17,67 @@
+@@ -17,57 +17,69 @@
   * along with this program.  If not, see <https://www.gnu.org/licenses/>.
   */
  
@@ -1447,6 +1513,8 @@ index a752f7a..81ef7c1 100644
 +    /* async packets the device side answered with NAK, re-sent by nak_timer */
 +    GList*     nak_list;
 +    QEMUTimer* nak_timer;
++    /* ios-tools: cancelled ids awaiting the device side's cancel ack */
++    GList*     drain_list;
  };
  
  #define TYPE_USB_TCP_REMOTE "usb-tcp-remote"

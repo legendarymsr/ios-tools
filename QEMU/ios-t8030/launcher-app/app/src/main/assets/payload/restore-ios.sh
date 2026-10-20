@@ -103,18 +103,20 @@ for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run ste
 [ -x "$INFERNO_BUILD/qemu-system-aarch64" ] || die "Inferno is not built - run step 3"
 # v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-6' "$INFERNO_BUILD/.ios-tools-patches"; then
-  die "Inferno needs the v1.3.0 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-7' "$INFERNO_BUILD/.ios-tools-patches"; then
+  die "Inferno needs the v1.3.1 patches (USB link cancel/NAK fixes on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
 # IPSW: the downloaded zip (ChefKiss's tested path); if it was deleted, the
 # fully extracted Restore/ folder works too (idevicerestore accepts a folder).
+# The extracted folder only when it still has the OS image; otherwise the
+# zip (idevicerestore streams the OS image from it, no unpacking first).
 IPSW_ARG=""
-if [ -n "${IPSW:-}" ] && [ -f "$IPSW" ]; then IPSW_ARG="$IPSW"
-elif [ -f "${RESTORE:-$DATA/Restore}/BuildManifest.plist" ] \
+if [ -f "${RESTORE:-$DATA/Restore}/BuildManifest.plist" ] \
      && find "${RESTORE:-$DATA/Restore}" -maxdepth 1 -name '*.dmg' -size +2000M | grep -q .; then
   IPSW_ARG="${RESTORE:-$DATA/Restore}"
+elif [ -n "${IPSW:-}" ] && [ -f "$IPSW" ]; then IPSW_ARG="$IPSW"
 else die "the IPSW (${IPSW:-?}) is gone and Restore/ has no OS image - re-run step 4 to download it again"; fi
 log "IPSW: $IPSW_ARG"
 # idevicerestore reads it from this chroot: make sure it is a readable IPSW
@@ -278,9 +280,15 @@ show_usb_msgs() {
   n=$(wc -l < "$DATA/companion/qemu.log" 2>/dev/null || echo 0)
   [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
   if [ "$n" -gt "$USBMSG_C" ]; then
-    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote: (the iPhone|unexpected status)' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
+    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote|usb_tcp_remote|warning|error' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
     USBMSG_C=$n
   fi
+}
+# usbmuxd's device count and idevicerestore's last line, for the status lines
+mux_count() { USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | grep -c . ; }
+ir_last() {
+  if [ -s "$R/idevicerestore.log.raw" ]; then tr -d '\r' < "$R/idevicerestore.log.raw" | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-90
+  else echo "starts when the device shows up"; fi
 }
 has_panic() { tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'panic\(cpu|SEP Panic|SEP ROM boot panic'; }
 # panic_line: the one line that names the cause
@@ -379,7 +387,7 @@ stage1_once() {
   COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1; PANIC_REBOOTS=0; WAS_LINKED=0
   bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
   log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
-  : > "$R/inferno.log"
+  : > "$R/inferno.log"; rm -f "$R/idevicerestore.log.raw"
   USBMSG_I=0; USBMSG_C=0; WFH_T=0; WFH_SAID=0
   check_usb_socket
   start_ios
@@ -435,18 +443,29 @@ stage1_once() {
       [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB-host VM"
       start_ios; COMP_RESTART_T=0
     fi
-    [ "$(usb_link)" = connected ] && { COMP_RESTART_T=0; WAS_LINKED=1; }
+    if [ "$(usb_link)" = connected ]; then COMP_RESTART_T=0; WAS_LINKED=1
+    elif [ "$WAS_LINKED" = 1 ]; then
+      WAS_LINKED=0
+      warn "USB link dropped - both sides reconnect by themselves (iOS retries every 2 s), the iOS VM keeps running"
+    fi
     # iOS waits only 120 s for the host ("waiting for host to trigger start
     # of restore"), so poll often: idevice_id is cheap.
     udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
     [ -n "$udid" ] && break
+    # restored is waiting: poll every second so idevicerestore starts at once
+    if [ "$WFH_T" -gt 0 ]; then
+      el=$(( $(date +%s) - WFH_T ))
+      if [ $((el % 20)) -lt 1 ] && [ "$el" -le 130 ]; then
+        printf '[*] restored waiting %3d s of 120: USB link %s, usbmuxd devices %s\n' "$el" "$(usb_link)" "$(mux_count)"
+      fi
+    fi
     el=$(( $(date +%s) - t0 ))
     [ "$el" -lt "${DEVICE_TIMEOUT:-21600}" ] || { show_panic; bash "$HERE/companion-vm.sh" report; echo "iOS USB link: $(usb_link)"; die "no device after ${DEVICE_TIMEOUT:-21600} s"; }
     if [ "$el" -ge "$next" ]; then
-      printf '[*] %3d min: USB link %s; iOS: %s\n' $((el / 60)) "$(usb_link)" "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
+      printf '[*] %3d min: USB link %s; usbmuxd devices %s; idevicerestore: %s; iOS: %s\n' $((el / 60)) "$(usb_link)" "$(mux_count)" "$(ir_last)" "$(tail -c 2000 "$R/ios-serial.log" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-110)"
       next=$((next + 120))
     fi
-    sleep "${DEVICE_POLL:-2}"
+    if [ "$WFH_T" -gt 0 ]; then sleep 1; else sleep "${DEVICE_POLL:-2}"; fi
   done
   log "device in restore mode: $udid ($(( ($(date +%s) - t0) / 60 )) min) - starting idevicerestore now"
 
