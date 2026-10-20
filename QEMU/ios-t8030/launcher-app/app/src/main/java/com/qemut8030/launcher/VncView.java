@@ -7,7 +7,6 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.text.InputType;
-import android.view.GestureDetector;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -19,8 +18,10 @@ import android.view.inputmethod.InputConnection;
 
 /**
  * Draws the remote framebuffer fit-to-screen, with pinch zoom and two-finger pan.
- * Touch: tap = left click, one-finger drag = move with left button held,
- * long press = right click. Mouse wheel / hardware keyboard are passed through.
+ * Touch is forwarded as an absolute pointer with button 1 = finger: press on
+ * finger down, streamed (throttled) moves while dragging, release on finger up.
+ * Inferno's t8030 multitouch (mt-spi) turns that into iOS touches. Two fingers
+ * pinch-zoom / pan locally. Mouse wheel / hardware keyboard are passed through.
  */
 public class VncView extends View {
 
@@ -35,7 +36,6 @@ public class VncView extends View {
     private float scale = 1f, tx = 0f, ty = 0f;  // effective transform
 
     private final ScaleGestureDetector scaleDetector;
-    private final GestureDetector gestures;
     private boolean dragging = false;
     private boolean multiTouch = false;
     private float lastFocusX, lastFocusY;
@@ -64,40 +64,6 @@ public class VncView extends View {
             }
         });
 
-        gestures = new GestureDetector(ctx, new GestureDetector.SimpleOnGestureListener() {
-            @Override public boolean onDown(MotionEvent e) { return true; }
-
-            @Override public boolean onSingleTapUp(MotionEvent e) {
-                if (multiTouch) return false;
-                int[] p = toRemote(e.getX(), e.getY());
-                click(p[0], p[1], 1);
-                return true;
-            }
-
-            @Override public void onLongPress(MotionEvent e) {
-                if (multiTouch || dragging) return;
-                int[] p = toRemote(e.getX(), e.getY());
-                click(p[0], p[1], 4);
-                performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
-            }
-
-            @Override public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
-                if (multiTouch || e2.getPointerCount() > 1) return false;
-                RfbClient c = client;
-                if (c == null) return true;
-                if (!dragging && e1 != null) {
-                    int[] s = toRemote(e1.getX(), e1.getY());
-                    c.sendPointer(s[0], s[1], 0);
-                    c.sendPointer(s[0], s[1], 1);
-                    dragging = true;
-                }
-                int[] p = toRemote(e2.getX(), e2.getY());
-                lastRemoteX = p[0]; lastRemoteY = p[1];
-                c.sendPointer(p[0], p[1], 1);
-                return true;
-            }
-        });
-        gestures.setIsLongpressEnabled(true);
     }
 
     public void setClient(RfbClient c) { this.client = c; }
@@ -180,17 +146,23 @@ public class VncView extends View {
         c.sendPointer(x, y, 0);
     }
 
+    /** Minimum spacing between streamed move events (ms); mt-spi samples every 50 ms. */
+    private static final long MOVE_INTERVAL_MS = 8;
+    private long lastMoveSent;
+    private volatile boolean gestureRunning = false;
+
     @Override public boolean onTouchEvent(MotionEvent e) {
         int action = e.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) { multiTouch = false; requestFocus(); }
+        if (gestureRunning) return true;  // a toolbar swipe owns the pointer
+        if (action == MotionEvent.ACTION_DOWN) {
+            multiTouch = false; requestFocus();
+            int[] p = toRemote(e.getX(), e.getY());
+            press(p[0], p[1]);
+        }
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
+            // second finger: lift the remote touch where it is and switch to pinch / pan
             multiTouch = true;
             releaseDrag();
-            // cancel any pending long-press so a pinch never right-clicks
-            MotionEvent cancel = MotionEvent.obtain(e);
-            cancel.setAction(MotionEvent.ACTION_CANCEL);
-            gestures.onTouchEvent(cancel);
-            cancel.recycle();
             lastFocusX = focusX(e); lastFocusY = focusY(e);
         }
         scaleDetector.onTouchEvent(e);
@@ -202,14 +174,41 @@ public class VncView extends View {
             invalidate();
         }
         if (action == MotionEvent.ACTION_POINTER_UP && e.getPointerCount() == 2) {
-            // remaining finger: refresh focus so a later second finger doesn't jump
             lastFocusX = focusX(e); lastFocusY = focusY(e);
         }
-        if (!multiTouch) gestures.onTouchEvent(e);
-        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+        if (!multiTouch && dragging && action == MotionEvent.ACTION_MOVE) {
+            // include batched historical samples so fast swipes keep intermediate points
+            int n = e.getHistorySize();
+            for (int i = 0; i < n; i++) moveTo(e.getHistoricalX(i), e.getHistoricalY(i), e.getHistoricalEventTime(i), false);
+            moveTo(e.getX(), e.getY(), e.getEventTime(), false);
+        }
+        if (action == MotionEvent.ACTION_UP) {
+            if (!multiTouch && dragging) moveTo(e.getX(), e.getY(), e.getEventTime(), true);
             releaseDrag();
         }
+        if (action == MotionEvent.ACTION_CANCEL) releaseDrag();
         return true;
+    }
+
+    private void press(int x, int y) {
+        RfbClient c = client;
+        if (c == null) return;
+        c.sendPointer(x, y, 0);   // position first, then finger down at that spot
+        c.sendPointer(x, y, 1);
+        lastRemoteX = x; lastRemoteY = y;
+        lastMoveSent = 0;
+        dragging = true;
+    }
+
+    private void moveTo(float vx, float vy, long t, boolean force) {
+        RfbClient c = client;
+        if (c == null) return;
+        int[] p = toRemote(vx, vy);
+        if (p[0] == lastRemoteX && p[1] == lastRemoteY) return;
+        if (!force && t - lastMoveSent < MOVE_INTERVAL_MS) return;
+        lastMoveSent = t;
+        lastRemoteX = p[0]; lastRemoteY = p[1];
+        c.sendPointer(p[0], p[1], 1);
     }
 
     private void releaseDrag() {
@@ -218,6 +217,41 @@ public class VncView extends View {
         RfbClient c = client;
         if (c != null) c.sendPointer(lastRemoteX, lastRemoteY, 0);
     }
+
+    /**
+     * Synthesised one-finger drag in framebuffer fractions (0..1), e.g. a swipe
+     * up from the bottom edge. Runs off the UI thread; ~16 ms steps.
+     */
+    public void swipe(float fx0, float fy0, float fx1, float fy1, int durationMs) {
+        final RfbClient c = client;
+        if (c == null || gestureRunning || c.width <= 1) return;
+        releaseDrag();
+        gestureRunning = true;
+        final int w = c.width, h = c.height;
+        new Thread(() -> {
+            try {
+                int x0 = clampI(Math.round(fx0 * w), w), y0 = clampI(Math.round(fy0 * h), h);
+                int x1 = clampI(Math.round(fx1 * w), w), y1 = clampI(Math.round(fy1 * h), h);
+                c.sendPointer(x0, y0, 0);
+                c.sendPointer(x0, y0, 1);
+                Thread.sleep(60);  // let the touch begin before moving
+                int steps = Math.max(2, durationMs / 16);
+                for (int i = 1; i <= steps; i++) {
+                    float t = i / (float) steps;
+                    float k = t * t * (3 - 2 * t);  // ease in/out
+                    c.sendPointer(Math.round(x0 + (x1 - x0) * k), Math.round(y0 + (y1 - y0) * k), 1);
+                    Thread.sleep(durationMs / steps);
+                }
+                Thread.sleep(60);
+                c.sendPointer(x1, y1, 0);
+            } catch (InterruptedException ignored) {
+            } finally {
+                gestureRunning = false;
+            }
+        }, "vnc-swipe").start();
+    }
+
+    private static int clampI(int v, int n) { return Math.max(0, Math.min(n - 1, v)); }
 
     private static float focusX(MotionEvent e) {
         float s = 0; int n = e.getPointerCount();

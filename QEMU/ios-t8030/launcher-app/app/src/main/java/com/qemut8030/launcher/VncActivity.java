@@ -61,9 +61,15 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         bar.addView(barButton("Esc", v -> view.tap(Keysyms.ESCAPE)));
         bar.addView(barButton("Ctrl+C", v -> combo(Keysyms.CONTROL, 'c')));
         bar.addView(barButton("Fit", v -> view.resetZoom()));
+        // iPhone 11 has no home button: both are swipes from the bottom edge.
+        bar.addView(barButton("Swipe up", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.30f, 450)));
+        bar.addView(barButton("Home", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.50f, 400)));
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
-        root.addView(bar, blp);
+        android.widget.HorizontalScrollView barScroll = new android.widget.HorizontalScrollView(this);
+        barScroll.setHorizontalScrollBarEnabled(false);
+        barScroll.addView(bar);
+        root.addView(barScroll, blp);
 
         status = new TextView(this);
         status.setTextColor(Color.WHITE);

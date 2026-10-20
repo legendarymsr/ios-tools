@@ -76,7 +76,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.4.8: USB-host VM loads apfs (adds crc32c_generic for libcrc32c); step 5 resumes at fs patches; clear apfs load errors."
+ui_print "- v1.4.9: VNC touch = real drags (press, streamed moves, release); Swipe up + Home buttons. Disks and restore state are kept."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
