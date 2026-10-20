@@ -34,6 +34,10 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout buttons;
     private File payload;
     private boolean busy = false;
+    private boolean ensuringPayload = false;
+    private Steps.Step pendingStep = null;
+    private long waitStartedMs = 0;
+    private int waitLogIndex = -1;  // start offset of the single waiting line in logText
     private MaterialButton vncButton;
     private volatile boolean vncWatch = false;
     private volatile boolean resumed = false;
@@ -77,30 +81,86 @@ public class MainActivity extends AppCompatActivity {
 
     private void checkRoot() {
         rootText.setText("Root: checking…");
+        ensurePayloadThen(null);
+    }
+
+    /**
+     * Obtain root + extract assets/payload (including nested dirs like vhci-bridge/).
+     * If {@code after} is non-null, run that step once ready. While waiting, keep a
+     * single updating log line (no flood).
+     */
+    private void ensurePayloadThen(@Nullable Steps.Step after) {
+        if (payload != null) {
+            if (after != null) startStep(after);
+            return;
+        }
+        if (after != null) pendingStep = after;
+        if (ensuringPayload) return;
+        ensuringPayload = true;
+        if (waitStartedMs == 0) waitStartedMs = System.currentTimeMillis();
+        setWaitLog("Waiting for root and app payload… grant su to this app in KernelSU if asked.");
+
         Shell.getShell(shell -> main.post(() -> {
             boolean ok = shell.isRoot();
             rootText.setText(ok ? "Root: granted (KernelSU/Magisk)"
                                 : "Root: NOT available — grant su to this app");
             rootText.setTextColor(ContextCompat.getColor(this, ok ? R.color.ok : R.color.err));
-            if (ok) {
-                try {
-                    payload = ScriptRunner.extractPayload(this);
-                    appendLog("Payload ready at " + payload.getAbsolutePath());
-                    for (File f : payload.listFiles() != null ? payload.listFiles() : new File[0]) {
-                        appendLog("  " + f.getName() + " (" + f.length() + " bytes)");
+            if (!ok) {
+                ensuringPayload = false;
+                long sec = (System.currentTimeMillis() - waitStartedMs) / 1000;
+                setWaitLog("No root after " + sec + "s. Open KernelSU → Superuser, allow "
+                        + "iOS Emu (t8030), then tap the step again.");
+                pendingStep = null;
+                waitStartedMs = 0;
+                return;
+            }
+            try {
+                payload = ScriptRunner.extractPayload(this);
+                clearWaitLog();
+                appendLog("Payload ready at " + payload.getAbsolutePath());
+                File[] files = payload.listFiles();
+                if (files != null) {
+                    for (File f : files) {
+                        appendLog("  " + f.getName() + (f.isDirectory() ? "/" : " (" + f.length() + " bytes)"));
                     }
-                } catch (Exception e) {
-                    appendLog("Failed to extract payload: " + e.getMessage());
                 }
-            } else {
-                appendLog("No root shell. Install KernelSU or Magisk and grant this app root.");
+                ensuringPayload = false;
+                waitStartedMs = 0;
+                Steps.Step next = pendingStep;
+                pendingStep = null;
+                if (next != null) startStep(next);
+            } catch (Exception e) {
+                ensuringPayload = false;
+                long sec = (System.currentTimeMillis() - waitStartedMs) / 1000;
+                setWaitLog("Payload extract failed after " + sec + "s: " + e.getMessage()
+                        + " — reinstall the qemu-t8030 module zip, then tap the step again.");
+                pendingStep = null;
+                waitStartedMs = 0;
+                payload = null;
             }
         }));
     }
 
     private void runStep(Steps.Step s) {
         if (busy) { appendLog("Busy — wait for the current step to finish."); return; }
-        if (payload == null) { appendLog("No root/payload yet."); return; }
+        if (payload == null) {
+            // One line, then ensure; do not spam on every tap.
+            if (waitStartedMs == 0) waitStartedMs = System.currentTimeMillis();
+            long sec = (System.currentTimeMillis() - waitStartedMs) / 1000;
+            setWaitLog("Waiting for root/payload (" + sec + "s)… grant su in KernelSU if asked, "
+                    + "or wait for extract. Step \"" + s.label + "\" will start when ready.");
+            ensurePayloadThen(s);
+            return;
+        }
+        startStep(s);
+    }
+
+    private void startStep(Steps.Step s) {
+        if (busy) { appendLog("Busy — wait for the current step to finish."); return; }
+        if (payload == null) {
+            ensurePayloadThen(s);
+            return;
+        }
         busy = true;
         setButtonsEnabled(false);
         String cmd = s.command.replace("{P}", payload.getAbsolutePath());
@@ -118,6 +178,32 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         });
+    }
+
+    /** Replace or create a single waiting status line at the end of the log. */
+    private void setWaitLog(String msg) {
+        CharSequence cur = logText.getText();
+        if (waitLogIndex >= 0 && waitLogIndex <= cur.length()) {
+            logText.setText(cur.subSequence(0, waitLogIndex));
+            if (logText.getText().length() > 0) logText.append("\n");
+        } else if (logText.getText().length() > 0) {
+            logText.append("\n");
+        }
+        waitLogIndex = logText.getText().length();
+        logText.append(msg);
+        logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
+    }
+
+    private void clearWaitLog() {
+        if (waitLogIndex < 0) return;
+        CharSequence cur = logText.getText();
+        if (waitLogIndex <= cur.length()) {
+            // drop the waiting line (and a preceding newline if we introduced one)
+            int start = waitLogIndex;
+            if (start > 0 && cur.charAt(start - 1) == '\n') start--;
+            logText.setText(cur.subSequence(0, start));
+        }
+        waitLogIndex = -1;
     }
 
     private void setButtonsEnabled(boolean en) {

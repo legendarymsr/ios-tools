@@ -1,6 +1,7 @@
 package com.qemut8030.launcher;
 
 import android.content.Context;
+import android.content.res.AssetManager;
 import com.topjohnwu.superuser.CallbackList;
 import com.topjohnwu.superuser.Shell;
 
@@ -22,24 +23,41 @@ public final class ScriptRunner {
     /** Copy everything under assets/payload/ into filesDir/payload and chmod +x. */
     public static File extractPayload(Context ctx) throws IOException {
         File out = new File(ctx.getFilesDir(), "payload");
-        if (!out.exists() && !out.mkdirs()) throw new IOException("mkdir failed");
-        String[] names = ctx.getAssets().list("payload");
-        if (names != null) {
-            for (String n : names) {
-                File f = new File(out, n);
-                try (InputStream is = ctx.getAssets().open("payload/" + n);
-                     OutputStream os = new FileOutputStream(f)) {
+        if (!out.exists() && !out.mkdirs()) throw new IOException("mkdir failed: " + out);
+        copyAssetDir(ctx.getAssets(), "payload", out);
+        return out;
+    }
+
+    /**
+     * Recursively copy an asset directory. AssetManager.list() returns null for a
+     * file and a (possibly empty) array for a directory — so a nested folder like
+     * vhci-bridge/ must be recursed; opening it as a file aborts the whole extract.
+     */
+    private static void copyAssetDir(AssetManager am, String assetPath, File destDir) throws IOException {
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            throw new IOException("mkdir failed: " + destDir);
+        }
+        String[] names = am.list(assetPath);
+        if (names == null) return;
+        for (String n : names) {
+            String childAsset = assetPath + "/" + n;
+            File childDest = new File(destDir, n);
+            String[] sub = am.list(childAsset);
+            if (sub == null) {
+                try (InputStream is = am.open(childAsset);
+                     OutputStream os = new FileOutputStream(childDest)) {
                     byte[] buf = new byte[8192];
                     int r;
                     while ((r = is.read(buf)) > 0) os.write(buf, 0, r);
                 }
                 //noinspection ResultOfMethodCallIgnored
-                f.setReadable(true, false);
+                childDest.setReadable(true, false);
                 //noinspection ResultOfMethodCallIgnored
-                f.setExecutable(true, false);
+                childDest.setExecutable(true, false);
+            } else {
+                copyAssetDir(am, childAsset, childDest);
             }
         }
-        return out;
     }
 
     /** Run a shell command as root, streaming stdout+stderr line by line. */
