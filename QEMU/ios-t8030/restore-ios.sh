@@ -53,10 +53,17 @@ mkdir -p "$R"
 # USB_MODE=vhci|companion. Chosen once per worker run; companion remains the
 # fallback when vhci_hcd is missing and is still used for apfs-run FS patches.
 USB_MODE=""
+VHCI_FAILS=0
+VHCI_FALLBACK_AFTER="${VHCI_FALLBACK_AFTER:-2}"
 pick_usb_mode() {
   if [ "${FORCE_COMPANION:-0}" = 1 ]; then
     USB_MODE=companion
     log "USB mode: companion VM (FORCE_COMPANION=1)"
+    return 0
+  fi
+  if [ "${VHCI_FAILS:-0}" -ge "$VHCI_FALLBACK_AFTER" ]; then
+    USB_MODE=companion
+    log "USB mode: companion VM (VHCI failed ${VHCI_FAILS} times — falling back)"
     return 0
   fi
   if bash "$HERE/vhci-usb.sh" available 2>/dev/null; then
@@ -89,6 +96,41 @@ usb_up() {
     bash "$HERE/companion-vm.sh" status | grep -q running
   fi
 }
+
+# When the iOS QEMU exits: print exit code/signal, last stderr, and VHCI bridge log.
+show_ios_exit() {
+  local why="${1:-exited}" ec="" sig=""
+  if [ -s "$R/ios-qemu.exit" ]; then
+    ec=$(awk '{print $1}' "$R/ios-qemu.exit")
+    if [ -n "$ec" ] && [ "$ec" -gt 128 ] 2>/dev/null; then
+      sig=$((ec - 128))
+      echo "[!] iOS QEMU $why: exit $ec (signal $sig)"
+    else
+      echo "[!] iOS QEMU $why: exit ${ec:-unknown}"
+    fi
+  else
+    echo "[!] iOS QEMU $why (no ios-qemu.exit record)"
+  fi
+  echo "----- inferno.log (QEMU stderr, last 40 lines) -----"
+  tail -n 40 "$R/inferno.log" 2>/dev/null || true
+  if [ "$USB_MODE" = vhci ]; then
+    echo "----- vhci-bridge.log (last 60 lines) -----"
+    tail -n 60 "$R/vhci/bridge.log" 2>/dev/null || echo "(no bridge log)"
+    echo "----- vhci status -----"
+    cat /sys/devices/platform/vhci_hcd.0/status 2>/dev/null || echo "(no vhci status)"
+  fi
+  echo "----- end -----"
+}
+note_vhci_fail() {
+  if [ "$USB_MODE" != vhci ]; then return 0; fi
+  VHCI_FAILS=$((VHCI_FAILS + 1))
+  warn "VHCI path failure count: $VHCI_FAILS/$VHCI_FALLBACK_AFTER"
+  if [ "$VHCI_FAILS" -ge "$VHCI_FALLBACK_AFTER" ]; then
+    warn "switching to the companion USB-host VM for the next attempt"
+    bash "$HERE/vhci-usb.sh" stop >/dev/null 2>&1 || true
+  fi
+}
+
 mux_id() {
   if [ "$USB_MODE" = companion ]; then
     USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id "$@"
@@ -393,6 +435,8 @@ handle_panic() {
     die "iOS panicked $1 $PANIC_REBOOTS times: ${pl:-see above}"
   fi
   warn "iOS panicked $1: ${pl:-no panic string} - SEP files are verified, so this is a timing/USB panic; rebooting the iOS VM ($PANIC_REBOOTS/${PANIC_RETRIES:-3})"
+  show_ios_exit "after panic"
+  note_vhci_fail
   companion_up || restart_companion
   start_ios
 }
@@ -401,11 +445,17 @@ companion_up() { usb_up; }
 start_ios() {
   [ -s "$R/ios-serial.log" ] && cp -f "$R/ios-serial.log" "$R/ios-serial.$(date +%Y%m%d-%H%M%S).log"
   : > "$R/ios-serial.log"
+  rm -f "$R/ios-qemu.exit"
   WAS_LINKED=0
   log "booting the iOS restore ramdisk ($(basename "$RAMDISK")); watch it with 'Open VNC viewer'"
+  # Wrapper records the QEMU/script exit code so a silent abort still shows up.
   RESTORE_MODE=1 SMP="${RESTORE_SMP:-${SMP:-7}}" USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" \
     SERIAL_QEMU="-serial file:$R/ios-serial.log" \
-    setsid bash "$HERE/run-t8030.sh" >> "$R/inferno.log" 2>&1 < /dev/null &
+    R="$R" HERE="$HERE" setsid bash -c '
+      bash "$HERE/run-t8030.sh" >> "$R/inferno.log" 2>&1 < /dev/null
+      ec=$?
+      echo "$ec $(date +%s)" > "$R/ios-qemu.exit"
+      exit "$ec"' ios-wrap &
   IOS_PID=$!
 }
 stop_ios() {
@@ -473,7 +523,15 @@ stage1_once() {
     fi
     if ! kill -0 "$IOS_PID" 2>/dev/null; then
       show_panic
+      show_ios_exit "exited before the device appeared"
+      note_vhci_fail
       IOS_STARTS=$((IOS_STARTS + 1))
+      if [ "$USB_MODE" = vhci ] && [ "$VHCI_FAILS" -ge "$VHCI_FALLBACK_AFTER" ]; then
+        warn "VHCI failed repeatedly — restarting stage 1 with the companion VM"
+        stop_ios
+        usb_stop
+        return 10
+      fi
       [ "$IOS_STARTS" -le 3 ] || die "the iOS VM exited 3 times before the device appeared (log above)"
       warn "the iOS VM exited without a panic - booting it again ($IOS_STARTS/3)"
       start_ios
