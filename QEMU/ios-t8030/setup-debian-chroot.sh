@@ -289,6 +289,13 @@ ROOTFS="$ROOTFS"
 mkdir -p "\$ROOTFS/dev" "\$ROOTFS/proc" "\$ROOTFS/sys"
 grep -q " \$ROOTFS/dev " /proc/mounts || { busybox mount --bind /dev "\$ROOTFS/dev" 2>/dev/null || mount -o bind /dev "\$ROOTFS/dev"; }
 grep -q " \$ROOTFS/dev/pts " /proc/mounts || { busybox mount --bind /dev/pts "\$ROOTFS/dev/pts" 2>/dev/null || mount -o bind /dev/pts "\$ROOTFS/dev/pts"; }
+# VHCI/usbip nodes appear under /dev/bus/usb after attach; re-bind so the
+# chroot always sees Android ueventd's latest nodes (not a stale empty dir).
+mkdir -p "\$ROOTFS/dev/bus/usb"
+if [ -d /dev/bus/usb ]; then
+  busybox mount --bind /dev/bus/usb "\$ROOTFS/dev/bus/usb" 2>/dev/null \
+    || mount --bind /dev/bus/usb "\$ROOTFS/dev/bus/usb" 2>/dev/null || true
+fi
 grep -q " \$ROOTFS/proc " /proc/mounts || { busybox mount --bind /proc "\$ROOTFS/proc" 2>/dev/null || mount -o bind /proc "\$ROOTFS/proc"; }
 grep -q " \$ROOTFS/sys " /proc/mounts || { busybox mount --bind /sys "\$ROOTFS/sys" 2>/dev/null || mount -o bind /sys "\$ROOTFS/sys"; }
 # /dev/kvm comes through the /dev bind above. Make sure it is accessible:

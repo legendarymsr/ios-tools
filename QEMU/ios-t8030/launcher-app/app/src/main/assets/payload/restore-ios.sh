@@ -552,7 +552,12 @@ stage1_once() {
       WFH_SAID=1
       warn "iOS is waiting for the host but the USB link is '$(usb_link)':"
       if grep -q 'usb-tcp-host: connected' "$R/inferno.log"; then
-        warn "  the iOS QEMU says it connected - the USB-host VM did not accept it (see [USB-host QEMU] lines)"
+        if [ "$USB_MODE" = vhci ]; then
+          warn "  the iOS QEMU says it connected - VHCI/bridge side has no accepted unix peer (see [VHCI] lines + vhci status)"
+          bash "$HERE/vhci-usb.sh" diagnostics 2>/dev/null | sed 's/^/  /' || true
+        else
+          warn "  the iOS QEMU says it connected - the USB-host VM did not accept it (see [USB-host QEMU] lines)"
+        fi
       elif grep -q 'usb-tcp-host: iOS turned USB on' "$R/inferno.log"; then
         warn "  the iOS QEMU is trying to connect: $(grep 'usb-tcp-host:' "$R/inferno.log" | tail -n1 | cut -c1-160)"
       else
@@ -566,12 +571,18 @@ stage1_once() {
     if [ "$COMP_RESTART_T" -gt 0 ] && [ "$(usb_link)" != connected ] \
        && grep -q 'usb-tcp-host: iOS turned USB on' "$R/inferno.log" 2>/dev/null \
        && [ $(( $(date +%s) - COMP_RESTART_T )) -gt "${RECONNECT_WAIT:-180}" ]; then
-      warn "iOS did not reconnect to the restarted USB-host VM within ${RECONNECT_WAIT:-180} s - rebooting the iOS VM"
+      warn "iOS did not reconnect to the restarted USB path (${USB_MODE}) within ${RECONNECT_WAIT:-180} s - rebooting the iOS VM"
       stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
-      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB-host VM"
+      [ "$IOS_STARTS" -le 3 ] || die "the iOS VM did not reconnect to the USB path ($USB_MODE)"
       start_ios; COMP_RESTART_T=0
     fi
-    if [ "$(usb_link)" = connected ]; then COMP_RESTART_T=0; WAS_LINKED=1
+    if [ "$(usb_link)" = connected ]; then
+      if [ "$WAS_LINKED" = 0 ] && [ "$USB_MODE" = vhci ]; then
+        log "USB link connected (VHCI) — syncing /dev/bus/usb and dumping diagnostics once"
+        bash "$HERE/vhci-usb.sh" sync-dev || true
+        bash "$HERE/vhci-usb.sh" diagnostics || true
+      fi
+      COMP_RESTART_T=0; WAS_LINKED=1
     elif [ "$WAS_LINKED" = 1 ]; then
       WAS_LINKED=0
       warn "USB link dropped - both sides reconnect by themselves (iOS retries every 2 s), the iOS VM keeps running"
@@ -580,9 +591,15 @@ stage1_once() {
     # of restore"), so poll often: idevice_id is cheap.
     udid=$(mux_id -l 2>/dev/null | head -n1)
     if [ -z "$udid" ] && [ "$USB_MODE" = vhci ] && [ "$(usb_link)" = connected ]; then
-      if [ "${VHCI_RESCAN_T:-0}" = 0 ]; then VHCI_RESCAN_T=$(date +%s); fi
-      if [ $(( $(date +%s) - VHCI_RESCAN_T )) -ge 60 ]; then
-        warn "USB link is up but usbmuxd lists no device - restarting usbmuxd to rescan (no udev)"
+      if [ "${VHCI_RESCAN_T:-0}" = 0 ]; then VHCI_RESCAN_T=$(date +%s); VHCI_DIAG_T=0; fi
+      # Keep /dev/bus/usb nodes in sync while the host enumerates (no udev in chroot).
+      if [ $(( $(date +%s) - ${VHCI_DIAG_T:-0} )) -ge 15 ]; then
+        bash "$HERE/vhci-usb.sh" sync-dev >/dev/null 2>&1 || true
+        VHCI_DIAG_T=$(date +%s)
+      fi
+      if [ $(( $(date +%s) - VHCI_RESCAN_T )) -ge 45 ]; then
+        warn "USB link is up but usbmuxd lists no device - syncing /dev/bus/usb + restarting usbmuxd (no udev)"
+        bash "$HERE/vhci-usb.sh" diagnostics || true
         bash "$HERE/vhci-usb.sh" rescan || true
         VHCI_RESCAN_T=$(date +%s)
       fi
@@ -594,7 +611,12 @@ stage1_once() {
     if [ "$WFH_T" -gt 0 ]; then
       el=$(( $(date +%s) - WFH_T ))
       if [ $((el % 20)) -lt 1 ] && [ "$el" -le 130 ]; then
-        printf '[*] restored waiting %3d s of 120: USB link %s, usbmuxd devices %s\n' "$el" "$(usb_link)" "$(mux_count)"
+        if [ "$USB_MODE" = vhci ]; then
+          printf '[*] restored waiting %3d s of 120: USB link %s, usbmuxd devices %s, /dev/bus/usb nodes %s\n' \
+            "$el" "$(usb_link)" "$(mux_count)" "$(find /dev/bus/usb -type c 2>/dev/null | wc -l)"
+        else
+          printf '[*] restored waiting %3d s of 120: USB link %s, usbmuxd devices %s\n' "$el" "$(usb_link)" "$(mux_count)"
+        fi
       fi
     fi
     el=$(( $(date +%s) - t0 ))
