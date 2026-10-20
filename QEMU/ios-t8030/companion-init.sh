@@ -19,7 +19,10 @@ for a in $(cat /proc/cmdline); do
 done
 
 for m in $(cat /modules/order); do
-  insmod "/modules/$m.ko" 2>/dev/null || grep -q "^$m " /proc/modules || say "insmod $m failed"
+  if ! err=$(insmod "/modules/$m.ko" 2>&1) && ! grep -q "^$m " /proc/modules; then
+    say "insmod $m failed: $err"
+    echo "insmod $m failed: $err" >> /modfail.log
+  fi
 done
 
 O9="trans=virtio,version=9p2000.L,msize=262144"
@@ -39,6 +42,8 @@ ip link set eth0 up && ip addr add 10.0.2.15/24 dev eth0 && ip route add default
   || say "network setup failed (usbmuxd will not be reachable)"
 
 J="$DATA/companion"
+{ echo "order: $(tr '\n' ' ' < /modules/order)"; cat /modfail.log 2>/dev/null
+  dmesg | grep -iE 'apfs|crc32c|unknown symbol' | tail -n 10 | sed 's/^/dmesg: /'; } > "/host$J/initrd-modules.log" 2>/dev/null
 if [ -f "/host$J/job.sh" ]; then
   say "running $J/job.sh"
   chroot /host /usr/bin/env -i HOME=/root LANG=C.UTF-8 DATA="$DATA" \

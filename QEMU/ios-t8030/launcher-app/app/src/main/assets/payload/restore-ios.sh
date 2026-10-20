@@ -263,8 +263,20 @@ if [ "${FORCE_RESTORE:-0}" = 1 ]; then
 fi
 
 backup_blank
+# A restore that finished (idevicerestore printed DONE) but whose state file was
+# not advanced (worker killed right after) is resumed, not redone.
+if [ "$(state)" = stage1-running ] && [ -s "$R/idevicerestore.log.raw" ] \
+   && tr -d '\r' < "$R/idevicerestore.log.raw" | grep -q '^DONE'; then
+  log "idevicerestore log ends in DONE - treating the iOS restore as finished"
+  set_state stage1-done
+fi
 case "$(state)" in
-  new|stage1-done|fs-patched) ;;
+  new) ;;
+  stage1-done)
+     log "iOS restore already done - skipping stage 1, resuming at the filesystem patches (no re-restore)"
+     log "  (FORCE_RESTORE=1 would wipe and restore again from the blank backup)" ;;
+  fs-patched)
+     log "iOS restore and filesystem patches already done - resuming at the final step" ;;
   *) warn "previous restore attempt stopped in state '$(state)' - starting stage 1 again from blank disks"
      restore_blank; set_state new ;;
 esac
@@ -697,6 +709,7 @@ if [ "$(state)" = stage1-done ]; then
     warn "SKIP_FS_PATCHES=1: not patching (stage 2 data migration may not complete without them)"
   else
     log "applying ChefKiss filesystem patches on the restored System volume (linux-apfs-rw in the USB-host VM)"
+    log "  (not in the Debian chroot: apfs-fuse is read-only, and linux-apfs-rw is a kernel module the phone kernel cannot load)"
     [ -f "$HERE/patch-launchd.py" ] || die "patch-launchd.py missing next to $0"
     cp -f "$HERE/patch-launchd.py" "$R/patch-launchd.py"
     JOB='set -e

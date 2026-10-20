@@ -194,7 +194,7 @@ build_companion() {
   [ -n "$kpkg" ] || die "could not resolve Debian's current arm64 kernel package (apt-cache depends linux-image-arm64)"
   kver=${kpkg#linux-image-}
   local apfsref; apfsref=$(repo_field linux-apfs-rw 3)
-  if stamp_ok companion "$kver $apfsref v3" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
+  if stamp_ok companion "$kver $apfsref v4" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
     log "USB-host VM kernel/initramfs already built ($kver)"; return 0
   fi
   log "USB-host VM: Debian kernel $kver"
@@ -220,29 +220,55 @@ build_companion() {
   local vm; vm=$(modinfo -F vermagic "$SRC/linux-apfs-rw/apfs.ko" 2>/dev/null | awk '{print $1}')
   [ "$vm" = "$kver" ] || die "apfs.ko vermagic '$vm' does not match kernel $kver"
 
-  # Resolve module dependencies (deps first) from modules.dep.
-  local order
-  order=$(python3 - "$mdir" $WANT_MODS <<'PY'
+  # Resolve module dependencies (deps first) from modules.dep, plus softdeps
+  # ("pre:") via modules.softdep/modules.alias. apfs needs libcrc32c, whose init
+  # allocates the "crc32c" crypto hash; with no modprobe in the initramfs that is
+  # crc32c_generic and must be loaded first (v1.4.7 missed it -> apfs failed).
+  local apfsdeps order
+  apfsdeps=$(modinfo -F depends "$SRC/linux-apfs-rw/apfs.ko" | tr ',' ' ')
+  order=$(python3 - "$mdir" $WANT_MODS crc32c_generic $apfsdeps <<'PY'
 import os, sys
 mdir, want = sys.argv[1], sys.argv[2:]
+norm = lambda n: os.path.basename(n).split(".ko")[0].replace("-", "_")
 builtin = set()
 try:
     for line in open(os.path.join(mdir, "modules.builtin")):
-        builtin.add(os.path.basename(line.strip()).split(".ko")[0].replace("-", "_"))
+        builtin.add(norm(line.strip()))
 except OSError:
     pass
 deps = {}
 for line in open(os.path.join(mdir, "modules.dep")):
     mod, _, rest = line.partition(":")
     deps[mod.strip()] = rest.split()
-byname = {}
-for m in deps:
-    n = os.path.basename(m).split(".ko")[0].replace("-", "_")
-    byname[n] = m
+byname = {norm(m): m for m in deps}
+alias = {}
+try:
+    for line in open(os.path.join(mdir, "modules.alias")):
+        f = line.split()
+        if len(f) == 3 and f[0] == "alias": alias.setdefault(f[1].replace("-", "_"), norm(f[2]))
+except OSError:
+    pass
+soft = {}
+try:
+    for line in open(os.path.join(mdir, "modules.softdep")):
+        f = line.split()
+        if len(f) > 2 and f[0] == "softdep":
+            pre, mode = [], None
+            for t in f[2:]:
+                if t in ("pre:", "post:"): mode = t
+                elif mode == "pre:": pre.append(t)
+            soft[f[1].replace("-", "_")] = pre
+except OSError:
+    pass
+soft.setdefault("libcrc32c", ["crc32c"])
+alias.setdefault("crc32c", "crc32c_generic")
 out, seen = [], set()
 def visit(m):
     if m in seen: return
     seen.add(m)
+    for p in soft.get(norm(m), []):
+        p = p.replace("-", "_"); p = p if p in byname else alias.get(p, p)
+        if p in byname: visit(byname[p])
     for d in deps.get(m, []): visit(d)
     out.append(m)
 for n in want:
@@ -267,16 +293,8 @@ PY
     esac
     echo "$b" >> "$ird/modules/order"
   done
-  # apfs.ko needs libcrc32c (crc32c) on 6.1; add whatever modinfo says.
-  local d dep
-  for d in $(modinfo -F depends "$SRC/linux-apfs-rw/apfs.ko" | tr ',' ' '); do
-    grep -qx "$d" "$ird/modules/order" && continue
-    grep -qE "(^|/)${d}\.ko" "$mdir/modules.builtin" 2>/dev/null && continue  # built in
-    dep=$(grep -E "(^|/)${d}\.ko(\.[a-z]+)?:" "$mdir/modules.dep" | head -n1 | cut -d: -f1)
-    [ -n "$dep" ] || die "apfs dependency $d not found in $kver"
-    case "$dep" in *.ko.xz) xz -dc "$mdir/$dep" > "$ird/modules/$d.ko";; *) cp "$mdir/$dep" "$ird/modules/$d.ko";; esac
-    echo "$d" >> "$ird/modules/order"
-  done
+  grep -qx crc32c_generic "$ird/modules/order" || grep -q crc32c_generic "$mdir/modules.builtin" 2>/dev/null \
+    || die "crc32c_generic missing from the USB-host VM initramfs - apfs would fail to load (libcrc32c needs it)"
   cp "$SRC/linux-apfs-rw/apfs.ko" "$ird/modules/apfs.ko"; echo apfs >> "$ird/modules/order"
   cp /bin/busybox "$ird/bin/busybox" || die "busybox-static missing (/bin/busybox)"
   busybox_static=$(file -b "$ird/bin/busybox")
@@ -287,7 +305,7 @@ PY
   mv -f "$CVM/vmlinuz.new" "$CVM/vmlinuz"; mv -f "$CVM/initrd.img.new" "$CVM/initrd.img"
   echo "$kver" > "$CVM/KVER"
   rm -rf "$w"
-  stamp companion "$kver $apfsref v3"
+  stamp companion "$kver $apfsref v4"
   log "USB-host VM ready: $CVM/vmlinuz + initrd.img (kernel $kver, $(echo $order | wc -w) modules + apfs)"
 }
 
