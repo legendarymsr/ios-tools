@@ -18,6 +18,8 @@
 # Setup"). There is no host-side USB stack on Android to plug it into, so a
 # small aarch64 "virt" VM (same Inferno qemu-system-aarch64, TCG) plays the
 # USB host and runs usbmuxd; idevicerestore runs natively here in the chroot.
+#   * vhci-bridge: when the Larry kernel has USBIP VHCI, exports Inferno's
+#     usb-tcp device into this chroot so usbmuxd needs no companion VM
 #
 # Re-runs are cheap: every part is skipped if it is already built at the same
 # pinned commit. FORCE=1 rebuilds everything.
@@ -289,9 +291,22 @@ PY
   log "USB-host VM ready: $CVM/vmlinuz + initrd.img (kernel $kver, $(echo $order | wc -w) modules + apfs)"
 }
 
+
+build_vhci_bridge() {
+  if stamp_ok vhci-bridge "1"; then log "vhci-bridge already built"; return 0; fi
+  log "building vhci-bridge (Inferno usb-tcp <-> Linux VHCI)"
+  local src="$HERE/vhci-bridge"
+  [ -f "$src/bridge.c" ] || die "vhci-bridge source missing at $src (module payload incomplete?)"
+  mkdir -p "$PREFIX/bin"
+  gcc -O2 -Wall -pthread -o "$PREFIX/bin/vhci-bridge" -I"$src" "$src/bridge.c" \
+    || die "vhci-bridge build failed"
+  "$PREFIX/bin/vhci-bridge" -h >/dev/null 2>&1 || true
+  stamp vhci-bridge "1"
+}
+
 check_tools() {
   local b
-  for b in bin/idevicerestore bin/idevice_id sbin/usbmuxd bin/inferno_fs_patcher companion/vmlinuz companion/initrd.img; do
+  for b in bin/idevicerestore bin/idevice_id sbin/usbmuxd bin/inferno_fs_patcher bin/vhci-bridge companion/vmlinuz companion/initrd.img; do
     [ -s "$PREFIX/$b" ] || die "missing $PREFIX/$b after build"
   done
   "$PREFIX/bin/idevicerestore" -v || die "idevicerestore does not run"
@@ -312,5 +327,6 @@ autotools_build usbmuxd --without-systemd --with-udevrulesdir="$PREFIX/lib/udev/
 autotools_build idevicerestore
 build_fspatcher
 build_companion
+build_vhci_bridge
 check_tools
 echo "[done] restore tools ready in $PREFIX"

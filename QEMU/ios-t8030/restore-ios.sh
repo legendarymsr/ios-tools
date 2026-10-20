@@ -5,9 +5,11 @@
 #
 # What ChefKiss documents (chefkiss.dev/guides/inferno/companion-setup/,
 # .../running-restoring/, .../fs-patches/), and what this script does instead:
-#   1. "Companion VM" with usb-tcp-remote + usbmuxd       -> companion-vm.sh usbmux
-#      (a tiny aarch64 virt VM here; idevicerestore itself runs in the chroot
-#       and talks to that usbmuxd over TCP via USBMUXD_SOCKET_ADDRESS)
+#   1. USB path for usbmuxd:
+#        preferred: vhci-usb.sh (Larry kernel USBIP VHCI + vhci-bridge in this
+#          chroot; usbmuxd sees /dev/bus/usb directly, no second QEMU)
+#        fallback:  companion-vm.sh usbmux (tiny aarch64 virt VM + usb-tcp-remote;
+#          idevicerestore talks to that usbmuxd over TCP via USBMUXD_SOCKET_ADDRESS)
 #   2. Main VM with the Erase restore ramdisk + usb-conn-* -> run-t8030.sh, RESTORE_MODE=1
 #   3. idevicerestore --erase --restore-mode -i 0x1122334455667788 IPSW -T root_ticket.der
 #      ("The VM should automatically close when restore stage 1 is finished")
@@ -47,6 +49,54 @@ state() { cat "$R/state" 2>/dev/null || echo new; }
 set_state() { echo "$1" > "$R/state"; log "state -> $1"; }
 mkdir -p "$R"
 
+# ----------------------------------------------------------- USB mode --------
+# USB_MODE=vhci|companion. Chosen once per worker run; companion remains the
+# fallback when vhci_hcd is missing and is still used for apfs-run FS patches.
+USB_MODE=""
+pick_usb_mode() {
+  if [ "${FORCE_COMPANION:-0}" = 1 ]; then
+    USB_MODE=companion
+    log "USB mode: companion VM (FORCE_COMPANION=1)"
+    return 0
+  fi
+  if bash "$HERE/vhci-usb.sh" available 2>/dev/null; then
+    USB_MODE=vhci
+    log "USB mode: VHCI (no companion VM for USB; usbmuxd is local in this chroot)"
+  else
+    USB_MODE=companion
+    log "USB mode: companion VM (VHCI not available - flash Larry kernel with USBIP/VHCI to drop the second VM)"
+  fi
+}
+usb_start() {
+  if [ "$USB_MODE" = vhci ]; then
+    bash "$HERE/vhci-usb.sh" start || die "VHCI USB did not start"
+  else
+    bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
+    log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
+  fi
+}
+usb_stop() {
+  if [ "$USB_MODE" = vhci ]; then
+    bash "$HERE/vhci-usb.sh" stop >/dev/null 2>&1 || true
+  else
+    bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+  fi
+}
+usb_up() {
+  if [ "$USB_MODE" = vhci ]; then
+    bash "$HERE/vhci-usb.sh" status 2>/dev/null | grep -q running
+  else
+    bash "$HERE/companion-vm.sh" status | grep -q running
+  fi
+}
+mux_id() {
+  if [ "$USB_MODE" = companion ]; then
+    USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id "$@"
+  else
+    env -u USBMUXD_SOCKET_ADDRESS idevice_id "$@"
+  fi
+}
+
 # ---------------------------------------------------------------- front end --
 # The app's root shell can be killed when Android reclaims the app. The real
 # work runs detached (setsid) and the front end only follows its log, so
@@ -58,6 +108,7 @@ if [ "${1:-}" != "--worker" ]; then
       p=$(cat "$R/worker.pid" 2>/dev/null || true)
       [ -n "$p" ] && kill "$p" 2>/dev/null && log "stopped restore worker $p"
       pkill -f 'qemu-system-aarch64.*-M t8030' 2>/dev/null || true
+      bash "$HERE/vhci-usb.sh" stop || true
       bash "$HERE/companion-vm.sh" stop || true
       exit 0 ;;
   esac
@@ -89,6 +140,7 @@ cleanup_vms() {
   if [ -n "$IOS_PID" ] && kill -0 "$IOS_PID" 2>/dev/null; then
     kill "$IOS_PID" 2>/dev/null; sleep 3; kill -9 "$IOS_PID" 2>/dev/null || true
   fi
+  bash "$HERE/vhci-usb.sh" stop >/dev/null 2>&1 || true
   bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
 }
 rm -f "$R/companion-last.txt"
@@ -255,16 +307,20 @@ usb_link() {
 # Both QEMUs must see the same socket file: same mount namespace and root.
 check_usb_socket() {
   local cp me_ns cp_ns me_root cp_root
-  [ -S "$USB_SOCK" ] || die "the USB-host VM's socket $USB_SOCK does not exist"
+  [ -S "$USB_SOCK" ] || die "the USB socket $USB_SOCK does not exist"
   awk -v p="$USB_SOCK" '$NF == p && $6 == "01"' /proc/net/unix | grep -q . \
-    || die "nothing listens on $USB_SOCK (USB-host VM not ready)"
-  cp=$(cat "$DATA/companion/qemu.pid" 2>/dev/null || true)
-  if [ -n "$cp" ] && [ -e "/proc/$cp" ]; then
-    me_ns=$(readlink /proc/self/ns/mnt); cp_ns=$(readlink "/proc/$cp/ns/mnt")
-    me_root=$(readlink /proc/self/root); cp_root=$(readlink "/proc/$cp/root")
-    log "USB socket $USB_SOCK: listening; mount ns $me_ns (USB-host VM $cp_ns), root $me_root (USB-host VM $cp_root)"
-    [ "$me_ns" = "$cp_ns" ] && [ "$me_root" = "$cp_root" ] \
-      || die "the USB-host VM runs in a different mount namespace/root than the iOS VM, so the iOS VM cannot see $USB_SOCK"
+    || die "nothing listens on $USB_SOCK (VHCI bridge / USB-host VM not ready)"
+  if [ "$USB_MODE" = companion ]; then
+    cp=$(cat "$DATA/companion/qemu.pid" 2>/dev/null || true)
+    if [ -n "$cp" ] && [ -e "/proc/$cp" ]; then
+      me_ns=$(readlink /proc/self/ns/mnt); cp_ns=$(readlink "/proc/$cp/ns/mnt")
+      me_root=$(readlink /proc/self/root); cp_root=$(readlink "/proc/$cp/root")
+      log "USB socket $USB_SOCK: listening; mount ns $me_ns (USB-host VM $cp_ns), root $me_root (USB-host VM $cp_root)"
+      [ "$me_ns" = "$cp_ns" ] && [ "$me_root" = "$cp_root" ] \
+        || die "the USB-host VM runs in a different mount namespace/root than the iOS VM, so the iOS VM cannot see $USB_SOCK"
+    fi
+  else
+    log "USB socket $USB_SOCK: listening (VHCI bridge in this chroot)"
   fi
 }
 # Print new USB link messages from both QEMUs on screen as they appear.
@@ -277,15 +333,24 @@ show_usb_msgs() {
     sed -n "$((USBMSG_I + 1)),${n}p" "$R/inferno.log" | grep -E 'usb-tcp-host|usb_tcp_host|Cannot connect|Socket path|Port specified|usb-conn' | cut -c1-200 | sed 's/^/[iOS QEMU] /'
     USBMSG_I=$n
   fi
-  n=$(wc -l < "$DATA/companion/qemu.log" 2>/dev/null || echo 0)
-  [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
-  if [ "$n" -gt "$USBMSG_C" ]; then
-    sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote|usb_tcp_remote|warning|error' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
-    USBMSG_C=$n
+  if [ "$USB_MODE" = vhci ]; then
+    n=$(wc -l < "$R/vhci/bridge.log" 2>/dev/null || echo 0)
+    [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
+    if [ "$n" -gt "$USBMSG_C" ]; then
+      sed -n "$((USBMSG_C + 1)),${n}p" "$R/vhci/bridge.log" | grep -E 'vhci-bridge|attached|detached|error|Inferno' | cut -c1-200 | sed 's/^/[VHCI] /'
+      USBMSG_C=$n
+    fi
+  else
+    n=$(wc -l < "$DATA/companion/qemu.log" 2>/dev/null || echo 0)
+    [ "$n" -lt "$USBMSG_C" ] && USBMSG_C=0
+    if [ "$n" -gt "$USBMSG_C" ]; then
+      sed -n "$((USBMSG_C + 1)),${n}p" "$DATA/companion/qemu.log" | grep -E 'usb-tcp-remote|usb_tcp_remote|warning|error' | cut -c1-200 | sed 's/^/[USB-host QEMU] /'
+      USBMSG_C=$n
+    fi
   fi
 }
 # usbmuxd's device count and idevicerestore's last line, for the status lines
-mux_count() { USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | grep -c . ; }
+mux_count() { mux_id -l 2>/dev/null | grep -c . ; }
 ir_last() {
   if [ -s "$R/idevicerestore.log.raw" ]; then tr -d '\r' < "$R/idevicerestore.log.raw" | grep -v '^[[:space:]]*$' | tail -n1 | cut -c1-90
   else echo "starts when the device shows up"; fi
@@ -331,7 +396,7 @@ handle_panic() {
   companion_up || restart_companion
   start_ios
 }
-companion_up() { bash "$HERE/companion-vm.sh" status | grep -q running; }
+companion_up() { usb_up; }
 
 start_ios() {
   [ -s "$R/ios-serial.log" ] && cp -f "$R/ios-serial.log" "$R/ios-serial.$(date +%Y%m%d-%H%M%S).log"
@@ -351,32 +416,37 @@ stop_ios() {
 }
 restart_companion() {
   COMP_RESTARTS=$((COMP_RESTARTS + 1))
-  bash "$HERE/companion-vm.sh" report > "$R/companion-report.$(date +%Y%m%d-%H%M%S).txt" 2>&1
-  bash "$HERE/companion-vm.sh" brief > "$R/companion-last.txt" 2>&1
-  cat "$R/companion-last.txt"
-  [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
-    || die "the USB-host VM stopped $COMP_RESTARTS times (reason and logs above)"
-  warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6})"
-  bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
-  bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start again"
-  log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
+  if [ "$USB_MODE" = vhci ]; then
+    { echo "VHCI mode"; bash "$HERE/vhci-usb.sh" status; tail -n 30 "$R/vhci/bridge.log" 2>/dev/null; } > "$R/companion-last.txt"
+    cat "$R/companion-last.txt"
+    [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
+      || die "the VHCI bridge stopped $COMP_RESTARTS times (log above)"
+    warn "VHCI USB stopped - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6})"
+    bash "$HERE/vhci-usb.sh" stop >/dev/null 2>&1 || true
+    bash "$HERE/vhci-usb.sh" start || die "VHCI USB did not start again"
+    bash "$HERE/vhci-usb.sh" rescan >/dev/null 2>&1 || true
+  else
+    bash "$HERE/companion-vm.sh" report > "$R/companion-report.$(date +%Y%m%d-%H%M%S).txt" 2>&1
+    bash "$HERE/companion-vm.sh" brief > "$R/companion-last.txt" 2>&1
+    cat "$R/companion-last.txt"
+    [ "$COMP_RESTARTS" -le "${COMPANION_RESTARTS:-6}" ] \
+      || die "the USB-host VM stopped $COMP_RESTARTS times (reason and logs above)"
+    warn "the USB-host VM stopped (reason above) - restarting it ($COMP_RESTARTS/${COMPANION_RESTARTS:-6})"
+    bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+    bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start again"
+    log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
+  fi
   COMP_RESTART_T=$(date +%s)
-  # Inferno's iOS side connects its USB cable once, when iOS turns USB on.
-  # If that already happened, iOS will never see the new USB-host VM and
-  # restored gives up after its 120 s "waiting for host" window - reboot the
-  # iOS VM right away instead of waiting (nothing is written to disk yet).
-  # The patched iOS side reconnects by itself within ~2 s; only restored's
-  # 120 s "waiting for host" window may already be lost.
   if tr -d '\r' < "$R/ios-serial.log" 2>/dev/null | grep -qE 'waiting for host to trigger'; then
     if [ -n "$IOS_PID" ] && kill -0 "$IOS_PID" 2>/dev/null; then
-      warn "iOS had already brought USB up - rebooting the iOS VM so it connects to the new USB-host VM"
+      warn "iOS had already brought USB up - rebooting the iOS VM so it connects to the new USB host"
       stop_ios; IOS_STARTS=$((IOS_STARTS + 1))
       [ "$IOS_STARTS" -le $((3 + ${PANIC_RETRIES:-3})) ] || die "the iOS VM had to be rebooted $IOS_STARTS times"
       start_ios
     fi
     COMP_RESTART_T=0
   else
-    log "the iOS QEMU reconnects to the new USB-host VM by itself (it retries every 2 s)"
+    log "the iOS QEMU reconnects to the new USB host by itself (it retries every 2 s)"
   fi
   WAS_LINKED=0
 }
@@ -384,9 +454,9 @@ restart_companion() {
 # One stage-1 attempt: returns 0 when idevicerestore finished, 10 when it is
 # worth retrying from the blank disks; dies on errors a retry won't fix.
 stage1_once() {
-  COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1; PANIC_REBOOTS=0; WAS_LINKED=0
-  bash "$HERE/companion-vm.sh" usbmux || die "the USB-host VM did not start"
-  log "USB-host VM placement (cgroup move check): $(head -c 200 "$DATA/companion/placement.txt" 2>/dev/null || echo unknown)"
+  COMP_RESTARTS=0; COMP_RESTART_T=0; IOS_STARTS=1; PANIC_REBOOTS=0; WAS_LINKED=0; VHCI_RESCAN_T=0
+  pick_usb_mode
+  usb_start
   : > "$R/inferno.log"; rm -f "$R/idevicerestore.log.raw"
   USBMSG_I=0; USBMSG_C=0; WFH_T=0; WFH_SAID=0
   check_usb_socket
@@ -450,7 +520,17 @@ stage1_once() {
     fi
     # iOS waits only 120 s for the host ("waiting for host to trigger start
     # of restore"), so poll often: idevice_id is cheap.
-    udid=$(USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" idevice_id -l 2>/dev/null | head -n1)
+    udid=$(mux_id -l 2>/dev/null | head -n1)
+    if [ -z "$udid" ] && [ "$USB_MODE" = vhci ] && [ "$(usb_link)" = connected ]; then
+      if [ "${VHCI_RESCAN_T:-0}" = 0 ]; then VHCI_RESCAN_T=$(date +%s); fi
+      if [ $(( $(date +%s) - VHCI_RESCAN_T )) -ge 60 ]; then
+        warn "USB link is up but usbmuxd lists no device - restarting usbmuxd to rescan (no udev)"
+        bash "$HERE/vhci-usb.sh" rescan || true
+        VHCI_RESCAN_T=$(date +%s)
+      fi
+    else
+      VHCI_RESCAN_T=0
+    fi
     [ -n "$udid" ] && break
     # restored is waiting: poll every second so idevicerestore starts at once
     if [ "$WFH_T" -gt 0 ]; then
@@ -473,8 +553,13 @@ stage1_once() {
   local irc
   set -o pipefail
   # ASR waits up to 10 min per message under TCG (patched idevicerestore)
-  IDEVICERESTORE_ASR_TIMEOUT_MS="${ASR_TIMEOUT_MS:-600000}" \
-  USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" stdbuf -oL -eL \
+  IDEVICERESTORE_ASR_TIMEOUT_MS="${ASR_TIMEOUT_MS:-600000}"
+  if [ "$USB_MODE" = companion ]; then
+    export USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT"
+  else
+    unset USBMUXD_SOCKET_ADDRESS || true
+  fi
+  stdbuf -oL -eL \
     idevicerestore --erase --restore-mode --no-input --plain-progress -i "$ECID" -T "$DATA/root_ticket.der" \
       --cache-path "$R/cache" "$IPSW_ARG" 2>&1 | tee "$R/idevicerestore.log.raw" | progress_filter
   irc=$?
@@ -501,7 +586,7 @@ stage1_once() {
     kill "$IOS_PID"; sleep 10; kill -9 "$IOS_PID" 2>/dev/null || true
   fi
   IOS_PID=""
-  bash "$HERE/companion-vm.sh" stop
+  usb_stop
   root_blank && die "idevicerestore reported success but the root disk is still blank"
   return 0
 }
@@ -519,7 +604,7 @@ if [ "$(state)" = new ]; then
     [ "$attempt" -lt "${STAGE1_ATTEMPTS:-3}" ] || die "stage 1 failed $attempt times (logs above). Tap the step again to retry."
     warn "retrying stage 1 from the blank disks"
     stop_ios
-    bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+    usb_stop
     restore_blank
     attempt=$((attempt + 1))
   done
