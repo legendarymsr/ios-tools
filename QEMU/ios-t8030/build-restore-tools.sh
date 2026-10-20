@@ -318,7 +318,7 @@ resolve_vhci_bridge_c() {
 }
 
 build_vhci_bridge() {
-  if stamp_ok vhci-bridge "3"; then log "vhci-bridge already built"; return 0; fi
+  if stamp_ok vhci-bridge "4"; then log "vhci-bridge already built"; return 0; fi
   log "building vhci-bridge (Inferno usb-tcp <-> Linux VHCI)"
   local srcc srcdir
   srcc=$(resolve_vhci_bridge_c) || {
@@ -342,7 +342,7 @@ build_vhci_bridge() {
       || die "vhci-bridge build failed ($srcc)"
   fi
   "$PREFIX/bin/vhci-bridge" -h >/dev/null 2>&1 || true
-  stamp vhci-bridge "3"
+  stamp vhci-bridge "4"
 }
 
 check_tools() {

@@ -190,7 +190,11 @@ enum usb_device_speed {
  * port resets in-kernel, so we synthesize TCP_USB_RESET per enumeration. */
 #define RESET_SETTLE_MS 100
 #define SETUP_NAK_RERESET_MS 1000
-#define MAX_XFER 65536
+#define MAX_XFER (1 << 20)        /* largest USB/IP URB we accept */
+/* tcp-usb length is uint16_t: never put more than this on one request
+ * (65536 truncated to 0 before v1.4.7). Multiple of 512 (HS bulk MPS). */
+#define CHUNK 16384
+#define BULK_MPS 512
 
 static const char *g_listen_path = DEFAULT_SOCK;
 static const char *g_vhci_path = DEFAULT_VHCI;
@@ -315,7 +319,7 @@ static bool inf_send_req(InfernoLink *L, int pid, uint8_t ep, uint64_t id,
     return ok;
 }
 
-static bool inf_send_cancel(InfernoLink *L, int pid, uint8_t ep, uint64_t id)
+static __attribute__((unused)) bool inf_send_cancel(InfernoLink *L, int pid, uint8_t ep, uint64_t id)
 {
     tcp_usb_header_t hdr = { .type = TCP_USB_CANCEL };
     tcp_usb_cancel_header c = { .addr = L->addr, .pid = pid, .ep = ep, .id = id };
@@ -361,6 +365,14 @@ typedef struct Pending {
     struct timespec nak_due; /* zero = not waiting for NAK retry */
     struct timespec nak_start; /* first NAK of the current stage */
     unsigned nak_count;
+    /* v1.4.7 strict per-endpoint FIFO */
+    uint32_t key;        /* ep | dir<<8 ; ep0 control shares one key */
+    bool started;        /* head of its queue, owns the wire */
+    bool on_wire;        /* request sent, response not yet received */
+    int32_t offset;      /* bytes transferred so far */
+    uint16_t chunk;      /* bytes in the request on the wire */
+    bool zlp_done;
+    uint32_t unlink_seq; /* !=0: CMD_UNLINK arrived while on_wire */
     struct Pending *next;
 } Pending;
 
@@ -412,6 +424,38 @@ static void pend_free(Pending *p)
     free(p->out_data);
     free(p->in_data);
     free(p);
+}
+
+static uint32_t urb_key(uint32_t ep, uint32_t dir, bool ctrl)
+{
+    return ctrl ? 0 : ((ep & 0xff) | ((dir & 1) << 8));
+}
+
+static void pend_append(Pending *p)
+{
+    Pending **pp = &g_pending;
+    while (*pp) pp = &(*pp)->next;
+    p->next = NULL;
+    *pp = p;
+}
+
+/* oldest pending for this key (list is in arrival order) */
+static Pending *pend_head(uint32_t key)
+{
+    for (Pending *p = g_pending; p; p = p->next)
+        if (p->key == key && !p->cancelled) return p;
+    return NULL;
+}
+
+static void kick_pending(Pending *p);
+
+static void start_next(uint32_t key)
+{
+    Pending *n = pend_head(key);
+    if (n && !n->started) {
+        n->started = true;
+        kick_pending(n);
+    }
 }
 
 static int32_t qemu_to_urb(int st)
@@ -468,18 +512,33 @@ static bool usbip_send_ret_unlink(uint32_t seq, int32_t status)
     return g_vhci_fd >= 0 && write_full(g_vhci_fd, &h, sizeof(h));
 }
 
+static bool usbip_send_ret_unlink(uint32_t seq, int32_t status);
+
 static void complete_pending(Pending *p, int qemu_status)
 {
+    uint32_t key = p->key;
     if (p->cancelled) {
         pend_remove(p);
         pend_free(p);
+        start_next(key);
         return;
     }
     int32_t urb = qemu_to_urb(qemu_status);
-    int32_t actual = (qemu_status == USB_RET_SUCCESS) ? p->actual : 0;
+    /* bulk: report bytes really moved even on error (OUT data already in iOS) */
+    int32_t actual = p->is_ctrl ? ((qemu_status == USB_RET_SUCCESS) ? p->actual : 0)
+                                : p->offset;
+    if (p->unlink_seq && qemu_status == USB_RET_SUCCESS && actual == 0 && !p->is_ctrl)
+        urb = -104; /* nothing moved: plain unlink */
     usbip_send_ret_submit(p->seqnum, p->direction, p->ep, urb, actual, p->in_data);
+    if (p->unlink_seq) {
+        /* URB finished before the unlink took effect (stub semantics):
+         * RET_SUBMIT above gives it back with real actual_length,
+         * RET_UNLINK status 0 tells vhci it was already done. */
+        usbip_send_ret_unlink(p->unlink_seq, 0);
+    }
     pend_remove(p);
     pend_free(p);
+    start_next(key);
 }
 
 static uint16_t ctrl_wlen(const Pending *p)
@@ -497,12 +556,18 @@ static bool send_stage(Pending *p)
         p->pid = (p->direction == USBIP_DIR_IN) ? USB_TOKEN_IN : USB_TOKEN_OUT;
         p->inf_id = g_next_id++;
         p->stage = ST_BULK;
-        uint16_t len = (uint16_t)(p->buflen > 0 ? (p->buflen > MAX_XFER ? MAX_XFER : p->buflen) : 0);
+        int32_t rem = p->buflen - p->offset;
+        if (rem < 0) rem = 0;
+        uint16_t len = (uint16_t)(rem > CHUNK ? CHUNK : rem);
+        p->chunk = len;
         uint8_t sno = (p->transfer_flags & URB_SHORT_NOT_OK) ? 1 : 0;
+        p->on_wire = true;
+        const char *src = p->out_data ? (const char *)p->out_data + p->offset : NULL;
         return inf_send_req(&g_link, p->pid, (uint8_t)p->ep, p->inf_id,
-                            p->out_data, len, sno);
+                            src, len, sno);
     }
 
+    p->on_wire = true;
     switch (p->stage) {
     case ST_SETUP:
         p->pid = USB_TOKEN_SETUP;
@@ -600,8 +665,29 @@ static void on_inferno_response(const tcp_usb_response_header *r, void *payload)
         free(payload);
         return;
     }
+    p->on_wire = false;
+    if (p->unlink_seq && p->is_ctrl) {
+        uint32_t key = p->key;
+        usbip_send_ret_submit(p->seqnum, p->direction, p->ep, -104, 0, NULL);
+        usbip_send_ret_unlink(p->unlink_seq, 0);
+        memset(&p->nak_due, 0, sizeof(p->nak_due));
+        pend_remove(p); pend_free(p);
+        start_next(key);
+        pthread_mutex_unlock(&g_plock);
+        free(payload);
+        return;
+    }
     if (st == USB_RET_NAK) {
         g_nak_total++;
+        if (p->unlink_seq) {
+            /* host gave up while this chunk was NAKed: data of this chunk
+             * never reached iOS; finish with what was moved so far */
+            memset(&p->nak_due, 0, sizeof(p->nak_due));
+            complete_pending(p, USB_RET_SUCCESS);
+            pthread_mutex_unlock(&g_plock);
+            free(payload);
+            return;
+        }
         if (p->nak_count++ == 0) clock_gettime(CLOCK_MONOTONIC, &p->nak_start);
         if (p->nak_count == 1 || p->nak_count % 500 == 0)
             LOG("NAK pid=0x%x ep=%u addr=%u (x%u, %ld ms)", r->pid, r->ep, g_link.addr,
@@ -659,14 +745,35 @@ static void on_inferno_response(const tcp_usb_response_header *r, void *payload)
             complete_pending(p, USB_RET_SUCCESS);
         }
     } else {
-        if (p->direction == USBIP_DIR_IN && payload && r->length) {
-            p->in_data = realloc(p->in_data, r->length);
-            if (p->in_data) memcpy(p->in_data, payload, r->length);
-            p->actual = r->length;
+        uint16_t got = r->length;
+        if (got > p->chunk) got = p->chunk;
+        if (p->direction == USBIP_DIR_IN) {
+            if (got && payload) {
+                if (!p->in_data) p->in_data = malloc(p->buflen > 0 ? (size_t)p->buflen : 1);
+                if (p->in_data) memcpy((char *)p->in_data + p->offset, payload, got);
+            }
+            p->offset += got;
+            p->actual = p->offset;
+            /* short packet or full: URB done */
+            if (got < p->chunk || p->offset >= p->buflen || p->unlink_seq)
+                complete_pending(p, USB_RET_SUCCESS);
+            else if (!send_stage(p))
+                complete_pending(p, USB_RET_IOERROR);
         } else {
-            p->actual = r->length;
+            /* OUT: iOS consumed `got` bytes of this chunk */
+            p->offset += got;
+            p->actual = p->offset;
+            bool more = got == p->chunk && p->offset < p->buflen;
+            bool need_zlp = !more && !p->zlp_done && p->chunk != 0 && got == p->chunk &&
+                            (p->transfer_flags & URB_ZERO_PACKET) &&
+                            p->buflen > 0 && (p->buflen % BULK_MPS) == 0;
+            if (need_zlp) p->zlp_done = true;
+            if ((more || need_zlp) && !p->unlink_seq) {
+                if (!send_stage(p)) complete_pending(p, USB_RET_IOERROR);
+            } else {
+                complete_pending(p, USB_RET_SUCCESS);
+            }
         }
-        complete_pending(p, USB_RET_SUCCESS);
     }
     pthread_mutex_unlock(&g_plock);
     free(payload);
@@ -691,8 +798,10 @@ static void *nak_thread(void *arg)
                 g_retrying = p->nak_count > 0;
                 bool ok = send_stage(p);
                 g_retrying = false;
-                if (!ok)
-                    complete_pending(p, USB_RET_IOERROR);
+                if (!ok) {
+                    complete_pending(p, USB_RET_IOERROR); /* frees p */
+                    break;                                /* list changed */
+                }
             }
         }
         pthread_mutex_unlock(&g_plock);
@@ -804,40 +913,66 @@ static void handle_cmd_submit(struct usbip_header *h, void *out_buf)
     p->out_data = out_buf;
     p->stage = p->is_ctrl ? ST_SETUP : ST_BULK;
     p->gen = g_gen;
+    p->key = urb_key(p->ep, p->direction, p->is_ctrl);
 
     DBG("CMD_SUBMIT seq=%u ep=%u dir=%u len=%d setup=%02x %02x %02x %02x",
         p->seqnum, p->ep, p->direction, p->buflen,
         p->setup[0], p->setup[1], p->setup[2], p->setup[3]);
 
     pthread_mutex_lock(&g_plock);
-    p->next = g_pending;
-    g_pending = p;
-    kick_pending(p);
+    pend_append(p);
+    /* only the oldest URB per endpoint is ever on the wire to hcd-tcp */
+    if (pend_head(p->key) == p) {
+        p->started = true;
+        kick_pending(p);
+    }
     pthread_mutex_unlock(&g_plock);
 }
 
 static void handle_cmd_unlink(struct usbip_header *h)
 {
     uint32_t victim = h->u.cmd_unlink.seqnum;
-    int found = 0;
     pthread_mutex_lock(&g_plock);
     Pending *p = pend_find_seq(victim);
     if (p && p->is_ctrl && g_link.addr == 0) {
         g_need_reset = true; /* hub timed out; its next try follows a port reset */
         LOG("UNLINK of ep0 URB at addr 0 (host enumeration timeout) - will bus-reset before next SETUP");
     }
-    if (p) {
-        found = 1;
-        p->cancelled = true;
-        p->gen = ++g_gen;
-        memset(&p->nak_due, 0, sizeof(p->nak_due));
-        inf_send_cancel(&g_link, p->pid, (uint8_t)p->ep, p->inf_id);
-        pend_remove(p);
-        pend_free(p);
+    if (!p) {
+        pthread_mutex_unlock(&g_plock);
+        /* already completed: its RET_SUBMIT went out first */
+        usbip_send_ret_unlink(h->base.seqnum, 0);
+        DBG("RET_UNLINK seq=%u victim=%u miss", h->base.seqnum, victim);
+        return;
     }
+    if (p->on_wire) {
+        /* A request is in hcd-tcp right now. Its data may already be in iOS,
+         * so do not drop it: finish when the response arrives (RET_SUBMIT
+         * with the real byte count, then RET_UNLINK 0). */
+        p->unlink_seq = h->base.seqnum;
+        LOG("UNLINK seq=%u while on wire (ep %u) - deferring until hcd-tcp answers",
+            victim, p->ep);
+        pthread_mutex_unlock(&g_plock);
+        return;
+    }
+    if (p->started && !p->is_ctrl && p->offset > 0) {
+        /* part of the URB already delivered: report it, never lose it */
+        p->unlink_seq = h->base.seqnum;
+        memset(&p->nak_due, 0, sizeof(p->nak_due));
+        complete_pending(p, USB_RET_SUCCESS);
+        pthread_mutex_unlock(&g_plock);
+        return;
+    }
+    /* queued, or NAK-waiting with nothing moved: nothing reached iOS */
+    uint32_t key = p->key;
+    bool was_started = p->started;
+    memset(&p->nak_due, 0, sizeof(p->nak_due));
+    pend_remove(p);
+    pend_free(p);
+    usbip_send_ret_unlink(h->base.seqnum, -104); /* -ECONNRESET */
+    DBG("RET_UNLINK seq=%u victim=%u ok", h->base.seqnum, victim);
+    if (was_started) start_next(key);
     pthread_mutex_unlock(&g_plock);
-    usbip_send_ret_unlink(h->base.seqnum, found ? -104 : 0); /* -ECONNRESET if was pending */
-    DBG("RET_UNLINK seq=%u victim=%u %s", h->base.seqnum, victim, found ? "ok" : "miss");
 }
 
 static void *vhci_reader(void *arg)
