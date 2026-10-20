@@ -42,12 +42,12 @@ cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 # nested vhci-bridge sources
 if [ -d "$MODPATH/payload/vhci-bridge" ]; then
   mkdir -p /data/local/tmp/qemu-t8030/vhci-bridge
-  cp -f "$MODPATH"/payload/vhci-bridge/* /data/local/tmp/qemu-t8030/vhci-bridge/ 2>/dev/null
+  cp -a "$MODPATH"/payload/vhci-bridge/. /data/local/tmp/qemu-t8030/vhci-bridge/ 2>/dev/null
 fi
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.4.0: VHCI USB when the Larry kernel has USBIP; else companion VM fallback."
+ui_print "- v1.4.3: syncs vhci-bridge + all payload scripts into the Debian chroot on each step."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
