@@ -39,21 +39,41 @@ find_vhci() {
 
 available() {
   find_vhci >/dev/null || return 1
-  [ -x "$BRIDGE" ] || [ -f "$HERE/vhci-bridge/bridge.c" ] || return 1
-  return 0
+  [ -x "$BRIDGE" ] && return 0
+  [ -f "$HERE/vhci-bridge/bridge.c" ] && return 0
+  [ -f "$HERE/vhci-bridge.c" ] && return 0
+  [ -f "$HERE/vhci-bridge.tgz" ] && return 0
+  [ -f "$HERE/vhci-bridge.tar.gz" ] && return 0
+  [ -f /data/local/tmp/qemu-t8030/vhci-bridge.c ] && return 0
+  [ -f /data/local/tmp/qemu-t8030/vhci-bridge/bridge.c ] && return 0
+  return 1
 }
 
 ensure_bridge() {
   if [ -x "$BRIDGE" ]; then return 0; fi
-  if [ -f "$HERE/vhci-bridge/bridge.c" ]; then
-    log "building vhci-bridge"
-    mkdir -p "$(dirname "$BRIDGE")"
-    gcc -O2 -Wall -pthread -o "$BRIDGE" \
-      -I"$HERE/vhci-bridge" "$HERE/vhci-bridge/bridge.c" \
-      || die "vhci-bridge build failed (need gcc in the chroot)"
-    return 0
+  local srcc=""
+  if [ -f "$HERE/vhci-bridge/bridge.c" ]; then srcc="$HERE/vhci-bridge/bridge.c"
+  elif [ -f "$HERE/vhci-bridge.c" ]; then srcc="$HERE/vhci-bridge.c"
+  elif [ -f /root/vhci-bridge.c ]; then srcc=/root/vhci-bridge.c
+  elif [ -f /data/local/tmp/qemu-t8030/vhci-bridge.c ]; then srcc=/data/local/tmp/qemu-t8030/vhci-bridge.c
+  elif [ -f /data/local/tmp/qemu-t8030/vhci-bridge/bridge.c ]; then srcc=/data/local/tmp/qemu-t8030/vhci-bridge/bridge.c
+  elif [ -f "$HERE/vhci-bridge.tgz" ] || [ -f /root/vhci-bridge.tgz ]; then
+    local tgz="$HERE/vhci-bridge.tgz"
+    [ -f "$tgz" ] || tgz=/root/vhci-bridge.tgz
+    mkdir -p "$HERE"
+    tar -xzf "$tgz" -C "$HERE" 2>/dev/null || tar -xzf "$tgz" -C /root
+    [ -f "$HERE/vhci-bridge/bridge.c" ] && srcc="$HERE/vhci-bridge/bridge.c"
   fi
-  die "vhci-bridge not at $BRIDGE and no source next to $0"
+  [ -n "$srcc" ] || die "vhci-bridge not at $BRIDGE; no source (checked $HERE/vhci-bridge{,.c,.tar.gz}, /data/local/tmp/qemu-t8030/). Reinstall qemu-t8030 v1.4.4+"
+  log "building vhci-bridge from $srcc"
+  mkdir -p "$(dirname "$BRIDGE")"
+  if [ "$(basename "$srcc")" = "vhci-bridge.c" ]; then
+    gcc -O2 -Wall -pthread -o "$BRIDGE" "$srcc" \
+      || die "vhci-bridge build failed (need gcc in the chroot)"
+  else
+    gcc -O2 -Wall -pthread -o "$BRIDGE" -I"$(dirname "$srcc")" "$srcc" \
+      || die "vhci-bridge build failed (need gcc in the chroot)"
+  fi
 }
 
 ensure_usbfs() {

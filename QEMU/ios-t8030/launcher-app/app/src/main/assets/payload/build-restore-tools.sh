@@ -292,16 +292,57 @@ PY
 }
 
 
+# Locate vhci-bridge sources. Prefer dir, then flat amalgamation, then tarball,
+# then Magisk staging path. Prints the .c path to compile on stdout.
+resolve_vhci_bridge_c() {
+  local c
+  for c in \
+      "$HERE/vhci-bridge/bridge.c" \
+      "$HERE/vhci-bridge.c" \
+      /root/vhci-bridge/bridge.c \
+      /root/vhci-bridge.c \
+      /data/local/tmp/qemu-t8030/vhci-bridge/bridge.c \
+      /data/local/tmp/qemu-t8030/vhci-bridge.c
+  do
+    [ -f "$c" ] && { echo "$c"; return 0; }
+  done
+  local tgz
+  for tgz in "$HERE/vhci-bridge.tgz" "$HERE/vhci-bridge.tar.gz" /root/vhci-bridge.tgz /root/vhci-bridge.tar.gz /data/local/tmp/qemu-t8030/vhci-bridge.tgz /data/local/tmp/qemu-t8030/vhci-bridge.tar.gz; do
+    if [ -f "$tgz" ]; then
+      mkdir -p "$HERE"
+      tar -xzf "$tgz" -C "$HERE" 2>/dev/null || true
+      [ -f "$HERE/vhci-bridge/bridge.c" ] && { echo "$HERE/vhci-bridge/bridge.c"; return 0; }
+    fi
+  done
+  return 1
+}
+
 build_vhci_bridge() {
-  if stamp_ok vhci-bridge "1"; then log "vhci-bridge already built"; return 0; fi
+  if stamp_ok vhci-bridge "2"; then log "vhci-bridge already built"; return 0; fi
   log "building vhci-bridge (Inferno usb-tcp <-> Linux VHCI)"
-  local src="$HERE/vhci-bridge"
-  [ -f "$src/bridge.c" ] || die "vhci-bridge source missing at $src (module payload incomplete?)"
+  local srcc srcdir
+  srcc=$(resolve_vhci_bridge_c) || {
+    echo "[ERROR] vhci-bridge source missing. Searched:" >&2
+    echo "  $HERE/vhci-bridge/bridge.c  $HERE/vhci-bridge.c  $HERE/vhci-bridge.tgz" >&2
+    echo "  /root/vhci-bridge...  /data/local/tmp/qemu-t8030/vhci-bridge..." >&2
+    echo "--- ls $HERE ---" >&2
+    ls -la "$HERE" 2>/dev/null | head -40 >&2
+    echo "--- ls $HERE/vhci-bridge ---" >&2
+    ls -la "$HERE/vhci-bridge" 2>/dev/null | head -20 >&2
+    die "vhci-bridge source missing (reinstall qemu-t8030 v1.4.4+ module/app)"
+  }
+  srcdir=$(dirname "$srcc")
+  log "vhci-bridge source: $srcc"
   mkdir -p "$PREFIX/bin"
-  gcc -O2 -Wall -pthread -o "$PREFIX/bin/vhci-bridge" -I"$src" "$src/bridge.c" \
-    || die "vhci-bridge build failed"
+  if [ "$(basename "$srcc")" = "vhci-bridge.c" ]; then
+    gcc -O2 -Wall -pthread -o "$PREFIX/bin/vhci-bridge" "$srcc" \
+      || die "vhci-bridge build failed ($srcc)"
+  else
+    gcc -O2 -Wall -pthread -o "$PREFIX/bin/vhci-bridge" -I"$srcdir" "$srcc" \
+      || die "vhci-bridge build failed ($srcc)"
+  fi
   "$PREFIX/bin/vhci-bridge" -h >/dev/null 2>&1 || true
-  stamp vhci-bridge "1"
+  stamp vhci-bridge "2"
 }
 
 check_tools() {

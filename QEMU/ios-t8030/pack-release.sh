@@ -6,6 +6,32 @@ VER=$(python3 -c "import pathlib,re; t=pathlib.Path('$HERE/launcher-app/app/buil
 VC=$(python3 -c "import pathlib,re; t=pathlib.Path('$HERE/launcher-app/app/build.gradle.kts').read_text(); print(re.search(r'versionCode\s*=\s*(\d+)',t).group(1))")
 APK=${1:-$HERE/launcher-app/app/build/outputs/apk/debug/app-debug.apk}
 [ -f "$APK" ] || { echo "missing APK: $APK"; exit 1; }
+
+# Refresh flat vhci-bridge assets (AssetManager nested-dir safe)
+python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+here = Path(sys.argv[1])
+root = here / "vhci-bridge"
+amalg = here / "vhci-bridge.c"
+parts = [
+    "/* Amalgamated vhci-bridge for Android asset extract (flat file).\n"
+    " * Generated from vhci-bridge/{tcp-usb.h,usbip_wire.h,bridge.c}.\n"
+    " */\n"
+]
+for h in ("tcp-usb.h", "usbip_wire.h"):
+    parts.append(f"\n/* ==== begin {h} ==== */\n")
+    parts.append((root / h).read_text())
+    parts.append(f"\n/* ==== end {h} ==== */\n")
+bridge = (root / "bridge.c").read_text()
+bridge = bridge.replace('#include "tcp-usb.h"\n', "").replace('#include "usbip_wire.h"\n', "")
+parts.append("\n/* ==== begin bridge.c ==== */\n")
+parts.append(bridge)
+amalg.write_text("".join(parts))
+print(f"refreshed {amalg} ({amalg.stat().st_size} bytes)")
+PY
+tar -C "$HERE" -czf "$HERE/vhci-bridge.tgz" vhci-bridge
+
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/META-INF/com/google/android" "$STAGE/app" "$STAGE/payload/vhci-bridge"
@@ -22,7 +48,7 @@ name=iOS t8030 Emulator Launcher
 version=v${VER}
 versionCode=${VC}
 author=legendarymsr
-description=v${VER}: VHCI USB path (no companion VM when Larry kernel has USBIP/VHCI); companion VM kept as fallback + for APFS FS patches. Inferno t8030 is still TCG-only. Installs the iOS Emu (t8030) launcher app.
+description=v${VER}: VHCI USB path (flat vhci-bridge.c + tar.gz for AssetManager); companion VM fallback + APFS FS patches. Inferno t8030 is TCG-only. Installs the iOS Emu (t8030) launcher app.
 PROP
 cat > "$STAGE/customize.sh" <<'CUS'
 #!/system/bin/sh
@@ -44,10 +70,13 @@ if [ -d "$MODPATH/payload/vhci-bridge" ]; then
   mkdir -p /data/local/tmp/qemu-t8030/vhci-bridge
   cp -a "$MODPATH"/payload/vhci-bridge/. /data/local/tmp/qemu-t8030/vhci-bridge/ 2>/dev/null
 fi
+# Flat amalgamation / tarball (preferred; survives AssetManager nested-dir quirks)
+cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
+  /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.4.3: syncs vhci-bridge + all payload scripts into the Debian chroot on each step."
+ui_print "- v1.4.4: flat vhci-bridge.c + tar.gz; force re-extract on version bump."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -63,7 +92,7 @@ PAYLOAD=(
   inferno-usb-tcp-remote-async-v130.patch inferno-usb-tcp-remote-fix.patch
   jailbreak-prep.sh libirecovery-no-usb.patch patch-launchd.py prepare-ios-files.sh
   restore-ios.sh run-t8030.sh setup-build-deps.sh setup-debian-chroot.sh
-  vhci-usb.sh LICENSE-xz xz-arm64
+  vhci-usb.sh vhci-bridge.c vhci-bridge.tgz LICENSE-xz xz-arm64
 )
 for f in "${PAYLOAD[@]}"; do
   [ -e "$HERE/$f" ] && cp -a "$HERE/$f" "$STAGE/payload/"

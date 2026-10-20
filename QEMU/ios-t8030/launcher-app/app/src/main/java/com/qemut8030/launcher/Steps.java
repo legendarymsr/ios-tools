@@ -16,27 +16,35 @@ public final class Steps {
         public Step(String l, String c) { label = l; command = c; }
     }
 
-    // Run long jobs outside the app's cgroup. Android's phantom-process killer
-    // and its per-app process-group kill only look at processes in the app's
-    // cgroup (uid_N/pid_M); a CPU-heavy QEMU left there gets SIGKILLed when
-    // the app goes to the background (e.g. while you watch the VNC viewer).
     static final String DETACH =
         "for c in /sys/fs/cgroup /acct; do [ -w \"$c/cgroup.procs\" ] && echo $$ > \"$c/cgroup.procs\"; done 2>/dev/null; ";
 
-    // Sync every payload file the chroot scripts reference. Flat cp of named
-    // files used to drop nested dirs (vhci-bridge/) and new patches — keep this
-    // wholesale so step 5+ always see the same tree the Magisk module installs.
+    // Sync every payload file the chroot scripts reference. Prefer flat
+    // vhci-bridge.c / vhci-bridge.tgz (AssetManager nested-dir safe), then
+    // unpack into /root/vhci-bridge for the build scripts.
     static final String SYNC =
         "DEST=/data/local/debian/root; "
+      + "P=\"{P}\"; "
       + "mkdir -p \"$DEST\"; "
-      + "cp -f {P}/*.sh {P}/*.py {P}/*.patch \"$DEST\"/ 2>/dev/null; "
-      + "if [ -x {P}/xz-arm64 ]; then cp -f {P}/xz-arm64 \"$DEST\"/; fi; "
-      + "if [ -d {P}/vhci-bridge ]; then "
-      + "  rm -rf \"$DEST\"/vhci-bridge; "
-      + "  cp -a {P}/vhci-bridge \"$DEST\"/; "
+      + "cp -f \"$P\"/*.sh \"$P\"/*.py \"$P\"/*.patch \"$DEST\"/ 2>/dev/null; "
+      + "cp -f \"$P\"/vhci-bridge.c \"$P\"/vhci-bridge.tgz \"$DEST\"/ 2>/dev/null; "
+      + "if [ -x \"$P\"/xz-arm64 ]; then cp -f \"$P\"/xz-arm64 \"$DEST\"/; fi; "
+      + "rm -rf \"$DEST\"/vhci-bridge; "
+      + "if [ -d \"$P\"/vhci-bridge ] && [ -f \"$P\"/vhci-bridge/bridge.c ]; then "
+      + "  cp -a \"$P\"/vhci-bridge \"$DEST\"/; "
+      + "elif [ -f \"$P\"/vhci-bridge.tgz ]; then "
+      + "  tar -xzf \"$P\"/vhci-bridge.tgz -C \"$DEST\" "
+      + "    || tar -xzf \"$DEST\"/vhci-bridge.tgz -C \"$DEST\"; "
+      + "elif [ -f \"$P\"/vhci-bridge.c ]; then "
+      + "  mkdir -p \"$DEST\"/vhci-bridge; "
+      + "  cp -f \"$P\"/vhci-bridge.c \"$DEST\"/vhci-bridge/bridge.c; "
       + "fi; "
       + "chmod 0755 \"$DEST\"/*.sh \"$DEST\"/xz-arm64 2>/dev/null; "
-      + "chmod 0755 \"$DEST\"/vhci-bridge 2>/dev/null; "
+      + "if [ ! -f \"$DEST\"/vhci-bridge/bridge.c ] && [ ! -f \"$DEST\"/vhci-bridge.c ]; then "
+      + "  echo \"[ERROR] SYNC: no vhci-bridge source under $P (ls:)\"; "
+      + "  ls -la \"$P\" 2>/dev/null | head -40; "
+      + "  ls -la \"$P\"/vhci-bridge 2>/dev/null | head -20; "
+      + "fi; "
       + "true; ";
 
     public static final Step[] STEPS = new Step[] {
@@ -49,14 +57,10 @@ public final class Steps {
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/build-inferno.sh'"),
         new Step("4. Download & Configure (Apple IPSW)",
-            // Progress streams back through the app log. ~5.5 GB — needs Wi-Fi + space.
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh "
           + "'DATA=/root/InfernoData bash /root/download-and-configure.sh'"),
         new Step("5. Restore iOS (automatic, long)",
-            // Builds idevicerestore/usbmuxd + vhci-bridge (or companion USB VM),
-            // boots the restore ramdisk, runs idevicerestore, applies ChefKiss
-            // FS patches, marks RESTORED. Detached; tapping again re-attaches.
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/restore-ios.sh'"),
         new Step("6. Boot iOS (t8030)",
@@ -74,9 +78,6 @@ public final class Steps {
           + "|| echo 'restore: not started (step 5)'; "
           + DETACH + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/jailbreak-prep.sh status' 2>/dev/null"),
         new Step("8. Jailbreak bootstrap (after restore)",
-            // Inferno patches AMFI/codesign in-kernel on every boot; this adds
-            // the userland bootstrap + root shell to the restored System volume
-            // (written by linux-apfs-rw inside the step-5 USB-host / VHCI path).
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/jailbreak-prep.sh stage'"),
     };

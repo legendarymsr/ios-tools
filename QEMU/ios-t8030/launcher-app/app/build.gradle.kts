@@ -8,8 +8,8 @@ android {
         applicationId = "com.qemut8030.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 29
-        versionName = "1.4.3"
+        versionCode = 30
+        versionName = "1.4.4"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -24,7 +24,7 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
     androidResources {
-        noCompress += listOf("kvmcheck-arm64")
+        noCompress += listOf("kvmcheck-arm64", "tgz", "tar.gz", "gz")
     }
 }
 

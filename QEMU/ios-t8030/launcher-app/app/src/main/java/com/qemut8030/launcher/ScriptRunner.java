@@ -10,6 +10,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /** Extracts bundled payload (scripts + binaries) and runs steps as root. */
@@ -20,32 +21,83 @@ public final class ScriptRunner {
         void onFinished(int exitCode);
     }
 
-    /** Copy everything under assets/payload/ into filesDir/payload and chmod +x. */
+    /**
+     * Copy assets/payload/ into filesDir/payload. Re-extracts whenever
+     * {@link BuildConfig#VERSION_CODE} changes (or marker missing), so nested
+     * assets added in a later APK are not skipped after an older install.
+     */
     public static File extractPayload(Context ctx) throws IOException {
         File out = new File(ctx.getFilesDir(), "payload");
+        File marker = new File(out, ".payload_version");
+        String want = String.valueOf(BuildConfig.VERSION_CODE);
+        boolean fresh = false;
+        if (out.isDirectory() && marker.isFile()) {
+            String have = readSmall(marker);
+            if (want.equals(have.trim())) {
+                // Still re-copy: cheap and repairs partial extracts. Marker only
+                // gates wiping stale empty dirs from older extract bugs.
+                fresh = true;
+            }
+        }
+        if (!fresh) {
+            deleteRecursive(out);
+        }
         if (!out.exists() && !out.mkdirs()) throw new IOException("mkdir failed: " + out);
         copyAssetDir(ctx.getAssets(), "payload", out);
+        // Expand flat tarball if present (avoids AssetManager nested-dir quirks).
+        File tgz = new File(out, "vhci-bridge.tgz");
+        File bridgeDir = new File(out, "vhci-bridge");
+        File amalg = new File(out, "vhci-bridge.c");
+        if (tgz.isFile() && (!bridgeDir.isDirectory() || !new File(bridgeDir, "bridge.c").isFile())) {
+            // busybox/toybox tar on Android host; best-effort. Chroot SYNC also unpacks.
+            try {
+                Process p = new ProcessBuilder("tar", "-xzf", tgz.getAbsolutePath(), "-C", out.getAbsolutePath())
+                        .redirectErrorStream(true).start();
+                p.waitFor();
+            } catch (Exception ignored) { /* chroot / scripts unpack later */ }
+        }
+        if (!new File(bridgeDir, "bridge.c").isFile() && amalg.isFile()) {
+            if (!bridgeDir.exists() && !bridgeDir.mkdirs()) {
+                throw new IOException("mkdir failed: " + bridgeDir);
+            }
+            // Leave amalgamation at payload root; scripts compile it directly.
+        }
+        writeSmall(marker, want);
         return out;
     }
 
     /**
-     * Recursively copy an asset directory. AssetManager.list() returns null for a
-     * file and a (possibly empty) array for a directory — so a nested folder like
-     * vhci-bridge/ must be recursed; opening it as a file aborts the whole extract.
+     * Recursively copy an asset directory.
+     * AssetManager.list(file) returns an empty array (not null) on modern
+     * Android — treat length-0 as "try open as file", otherwise recurse.
      */
     private static void copyAssetDir(AssetManager am, String assetPath, File destDir) throws IOException {
         if (!destDir.exists() && !destDir.mkdirs()) {
             throw new IOException("mkdir failed: " + destDir);
         }
         String[] names = am.list(assetPath);
-        if (names == null) return;
+        if (names == null || names.length == 0) return;
         for (String n : names) {
+            if (n == null || n.isEmpty() || n.equals(".") || n.equals("..")) continue;
+            // Skip our runtime marker if somehow bundled
+            if (n.equals(".payload_version")) continue;
             String childAsset = assetPath + "/" + n;
             File childDest = new File(destDir, n);
-            String[] sub = am.list(childAsset);
-            if (sub == null) {
-                try (InputStream is = am.open(childAsset);
-                     OutputStream os = new FileOutputStream(childDest)) {
+            String[] sub;
+            try {
+                sub = am.list(childAsset);
+            } catch (IOException e) {
+                sub = null;
+            }
+            if (sub != null && sub.length > 0) {
+                // Directory with children
+                copyAssetDir(am, childAsset, childDest);
+                continue;
+            }
+            // File, or empty directory. Prefer open-as-file.
+            try (InputStream is = am.open(childAsset)) {
+                if (childDest.isDirectory()) deleteRecursive(childDest);
+                try (OutputStream os = new FileOutputStream(childDest)) {
                     byte[] buf = new byte[8192];
                     int r;
                     while ((r = is.read(buf)) > 0) os.write(buf, 0, r);
@@ -54,9 +106,33 @@ public final class ScriptRunner {
                 childDest.setReadable(true, false);
                 //noinspection ResultOfMethodCallIgnored
                 childDest.setExecutable(true, false);
-            } else {
-                copyAssetDir(am, childAsset, childDest);
+            } catch (IOException openFail) {
+                // Empty directory (or unreadable asset) — ensure dir exists
+                if (!childDest.exists() && !childDest.mkdirs()) {
+                    throw new IOException("cannot extract asset " + childAsset + ": " + openFail.getMessage());
+                }
             }
+        }
+    }
+
+    private static void deleteRecursive(File f) {
+        if (f == null || !f.exists()) return;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteRecursive(k);
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
+    }
+
+    private static String readSmall(File f) throws IOException {
+        try (InputStream is = new java.io.FileInputStream(f)) {
+            byte[] b = is.readAllBytes();
+            return new String(b, StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void writeSmall(File f, String s) throws IOException {
+        try (OutputStream os = new FileOutputStream(f)) {
+            os.write(s.getBytes(StandardCharsets.UTF_8));
         }
     }
 
