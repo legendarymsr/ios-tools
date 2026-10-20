@@ -171,10 +171,11 @@ fi
 # a stale "already handled" DART interrupt under MTTCG (one cause of the
 # "t8020dart invalid lock state" panic). Again one file + relink.
 HERE=$(cd "$(dirname "$0")" && pwd)
-PATCH_ID="ios-tools-patches-5"
+PATCH_ID="ios-tools-patches-6"
 # Superseded patches from earlier versions are undone first:
 #   v1.2.7 inferno-usb-tcp-remote-fix.patch, v1.2.9 inferno-usb-tcp-remote-async-v129.patch,
-#   v1.2.10 inferno-usb-tcp-remote-async-v1210.patch
+#   v1.2.10 inferno-usb-tcp-remote-async-v1210.patch,
+#   v1.2.10/11 inferno-usb-tcp-host-retry-v1211.patch
 # Current set:
 #   inferno-usb-tcp-remote-async.patch  USB-host side: Inferno dev's async
 #       rewrite (7900ece) + crash fixes + "iPhone connected/disconnected" log
@@ -182,10 +183,19 @@ PATCH_ID="ios-tools-patches-5"
 #   inferno-usb-tcp-host-retry.patch    iOS side: keep retrying the connect
 #       every 2 s while iOS has USB on (cc4302a tried once, when iOS enabled
 #       USB, and never again; also reconnects after a USB-host VM restart) and
-#       log every step ("usb-tcp-host: ...") in inferno.log
+#       log every step ("usb-tcp-host: ...") in inferno.log; v1.3.0: answer
+#       NODEV instead of asserting when iOS turned USB off mid-request, no
+#       abort on a corrupt stream
 #   inferno-dart-error-lock.patch       SEP DART error clear under the lock
-for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch inferno-usb-tcp-remote-async-v1210.patch; do
+for old in inferno-usb-tcp-remote-fix.patch inferno-usb-tcp-remote-async-v129.patch inferno-usb-tcp-remote-async-v1210.patch inferno-usb-tcp-host-retry-v1211.patch; do
   of="$HERE/$old"
+  # the current version may contain the old one's hunks: never undo an old
+  # patch when its replacement is already applied
+  case "$old" in
+    inferno-usb-tcp-host-retry-*) cur=inferno-usb-tcp-host-retry.patch ;;
+    *) cur=inferno-usb-tcp-remote-async.patch ;;
+  esac
+  git -C "$SRC" apply --reverse --check "$HERE/$cur" >/dev/null 2>&1 && continue
   if [ -f "$of" ] && git -C "$SRC" apply --reverse --check "$of" >/dev/null 2>&1; then
     git -C "$SRC" apply --reverse "$of" || die "could not undo the old $old"
     log "patch $old: removed (superseded)"

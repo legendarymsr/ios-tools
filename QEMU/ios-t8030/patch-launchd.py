@@ -16,6 +16,7 @@ After this, the guest MUST boot with the launchd_unsecure_cache=1 boot-arg
 usage: patch-launchd.py LAUNCHD_PLIST [--out OUT] [--no-bash] [--no-disable]
 """
 import argparse
+import os
 import plistlib
 import sys
 
@@ -79,8 +80,21 @@ def main() -> int:
             print(f"[*] added root bash daemon on /dev/console ({BASH_KEY})")
 
     out = a.out or a.plist
-    with open(out, "wb") as f:
+    # Write a new file and rename it over the old one: on iOS the plist is
+    # usually an APFS-compressed (decmpfs) file, and linux-apfs-rw refuses to
+    # open compressed files for writing (EOPNOTSUPP). A new inode is plain.
+    st = os.stat(a.plist)
+    tmp = out + ".ios-tools.tmp"
+    with open(tmp, "wb") as f:
         plistlib.dump(data, f, fmt=plistlib.FMT_XML)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+    os.chmod(tmp, st.st_mode & 0o7777)
+    os.replace(tmp, out)
     print(f"[*] wrote {out} ({changed} change(s))")
     return 0
 

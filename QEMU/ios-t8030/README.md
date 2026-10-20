@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.2.11.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.3.0.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -114,6 +114,25 @@ Limits:
   (16 KiB pages); `-accel kvm` / `-cpu host` are not usable for this machine.
   `run-t8030.sh` probes `/dev/kvm` for logging but always launches with
   `-accel tcg`.
+- **v1.3.0 restore audit (everything after the USB link connects):**
+  - **idevicerestore crash:** when libusb cannot start in the chroot (no usbfs, or the uevent netlink socket is denied on Android), libirecovery's event thread used a NULL libusb context and idevicerestore died with SIGSEGV before it even asked usbmuxd. Fixed by `libirecovery-no-usb.patch`; restore-mode devices go through usbmuxd anyway.
+  - **TCG timeouts (`idevicerestore-tcg-timeouts.patch`):**
+    - ASR receive: 10 min instead of libusbmuxd's 5 s default (`ASR_TIMEOUT_MS`).
+    - Connect attempts: ASR 300 s, FDR/baseband/bootability 60 attempts.
+    - Reconnect window: 180 s.
+    - Initial device discovery: 60 s.
+  - **Filesystem patches:**
+    - **launchd.plist:** linux-apfs-rw refuses to write APFS-compressed files, and iOS's launchd.plist usually is one. It is now written as a new file and renamed over the old one, keeping owner and mode.
+    - **dyld cache:** a compressed dyld cache is first rewritten as a plain copy.
+    - **Read-only fallback:** a silent read-only mount is detected (`/proc/mounts` plus a write test) instead of failing later.
+  - **iOS side (`hcd-tcp.c`):** a request that arrives after iOS turned USB off is answered NODEV instead of tripping QEMU's `usb_handle_packet` assertion (abort). An unknown message type reconnects instead of `assert_not_reached`, and a reset is ignored while detached.
+  - **Restore ramdisk:** it boots with `-no-reboot`, so the VM really closes at the end of stage 1 instead of booting the ramdisk again.
+  - **USB-host VM:**
+    - **Modules:** a built-in (`=y`) EHCI/usbcore/crc32c no longer aborts the module list.
+    - **Logging:** it logs its USB buses and the EHCI driver.
+    - **usbmuxd rescan:** usbmuxd is restarted to rescan if the iPhone (05ac:129x/12ax) sits on the bus for 60 s without being listed. libusb there has no udev, so a missed hotplug event used to be final.
+  - **IPSW check:** step 5 checks that the IPSW is readable in the chroot and has a BuildManifest.plist.
+  - **Re-run:** step 3 (re-applies the iOS-side patch; `hcd-tcp.c` + relink), then step 5. Its first run rebuilds libirecovery, idevicerestore and the USB-host VM initramfs (a few minutes).
 - **v1.2.11 NAK no longer drops the USB link:**
   - **Cause:** Inferno dev's async `usb-tcp-remote` (brought in by v1.2.9) answers every USB transfer asynchronously. When the iPhone side replied NAK ("no data yet", the normal answer to interrupt/bulk IN polling), it printed `USB_RET_NAK|ASYNC an ASYNC packet` and closed the whole link. With cc4302a's blocking version the same NAK simply went back to EHCI synchronously, and EHCI polled again. QEMU does not allow an async packet to be completed with NAK, so this case needs its own handling.
   - **Fix (in `inferno-usb-tcp-remote-async.patch`):**
@@ -263,7 +282,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.2.11.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.3.0.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)

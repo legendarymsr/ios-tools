@@ -115,10 +115,22 @@ export CPPFLAGS="-I$PREFIX/include"
 
 autotools_build() {
   local name="$1"; shift
-  local ref url; url=$(repo_field "$name" 2); ref=$(repo_field "$name" 3)
-  if stamp_ok "$name" "$ref"; then log "$name already built (${ref:0:12})"; return 0; fi
+  local ref url sref; url=$(repo_field "$name" 2); ref=$(repo_field "$name" 3); sref="$ref"
+  # idevicerestore: rebuild when our TCG timeout patch changes
+  [ "$name" = idevicerestore ] && sref="$ref tcg1"
+  [ "$name" = libirecovery ] && sref="$ref nousb1"
+  if stamp_ok "$name" "$sref"; then log "$name already built (${ref:0:12})"; return 0; fi
   log "building $name @ ${ref:0:12}"
   fetch "$name" "$url" "$ref"
+  if [ "$name" = libirecovery ]; then
+    # ios-tools: if libusb cannot start in this chroot (no usbfs / uevent
+    # netlink denied on Android), idevicerestore crashed (SIGSEGV) in
+    # libirecovery's event thread before even looking at usbmuxd.
+    ( cd "$SRC/$name" && git apply "$HERE/libirecovery-no-usb.patch" 2>/dev/null \
+        || patch -p1 --forward < "$HERE/libirecovery-no-usb.patch" ) \
+      || die "could not apply libirecovery-no-usb.patch"
+    grep -q 'usb_ok' "$SRC/$name/src/libirecovery.c" || die "libirecovery patch not present after apply"
+  fi
   if [ "$name" = idevicerestore ]; then
     # ChefKiss Companion VM Setup: "For idevicerestore, you must apply the
     # following small patch" (https://chefkiss.dev/Extras/Inferno/idevicerestore.patch).
@@ -127,13 +139,19 @@ autotools_build() {
         || patch -p1 --forward < "$HERE/idevicerestore-inferno.patch" ) \
       || die "could not apply idevicerestore-inferno.patch"
     grep -q 'strstr(model, "DEV")' "$SRC/$name/src/restore.c" || die "idevicerestore patch not present after apply"
+    # ios-tools: longer USB/ASR timeouts - everything is far slower under TCG
+    # (ASR's 5 s receive default, 60 s ASR connect, 10 s reconnect window).
+    ( cd "$SRC/$name" && git apply "$HERE/idevicerestore-tcg-timeouts.patch" 2>/dev/null \
+        || patch -p1 --forward < "$HERE/idevicerestore-tcg-timeouts.patch" ) \
+      || die "could not apply idevicerestore-tcg-timeouts.patch"
+    grep -q 'IDEVICERESTORE_ASR_TIMEOUT_MS' "$SRC/$name/src/asr.c" || die "idevicerestore TCG patch not present after apply"
   fi
   ( cd "$SRC/$name" \
     && NOCONFIGURE=1 ./autogen.sh \
     && ./configure --prefix="$PREFIX" --disable-static "$@" \
     && make -j"$JOBS" \
     && make install ) || die "$name build failed (see the compiler output above)"
-  stamp "$name" "$ref"
+  stamp "$name" "$sref"
 }
 
 build_libusb() {
@@ -164,7 +182,7 @@ CVM="$PREFIX/companion"
 # Modules the VM needs (Debian builds all of these as =m; deps are resolved
 # from modules.dep). virtio-pci/net/blk + 9p for the shared folders, EHCI for
 # the emulated iPhone, apfs for the restored System volume.
-WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p ehci_pci usbcore"
+WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p usbcore ehci_hcd ehci_pci"
 
 build_companion() {
   local kpkg kver
@@ -174,7 +192,7 @@ build_companion() {
   [ -n "$kpkg" ] || die "could not resolve Debian's current arm64 kernel package (apt-cache depends linux-image-arm64)"
   kver=${kpkg#linux-image-}
   local apfsref; apfsref=$(repo_field linux-apfs-rw 3)
-  if stamp_ok companion "$kver $apfsref v2" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
+  if stamp_ok companion "$kver $apfsref v3" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
     log "USB-host VM kernel/initramfs already built ($kver)"; return 0
   fi
   log "USB-host VM: Debian kernel $kver"
@@ -205,6 +223,12 @@ build_companion() {
   order=$(python3 - "$mdir" $WANT_MODS <<'PY'
 import os, sys
 mdir, want = sys.argv[1], sys.argv[2:]
+builtin = set()
+try:
+    for line in open(os.path.join(mdir, "modules.builtin")):
+        builtin.add(os.path.basename(line.strip()).split(".ko")[0].replace("-", "_"))
+except OSError:
+    pass
 deps = {}
 for line in open(os.path.join(mdir, "modules.dep")):
     mod, _, rest = line.partition(":")
@@ -221,7 +245,10 @@ def visit(m):
     out.append(m)
 for n in want:
     n = n.replace("-", "_")
-    if n not in byname: sys.exit("missing module: " + n)
+    if n not in byname:
+        if n in builtin:
+            continue  # built into the kernel (=y)
+        sys.exit("missing module: " + n)
     visit(byname[n])
 print("\n".join(out))
 PY
@@ -242,6 +269,7 @@ PY
   local d dep
   for d in $(modinfo -F depends "$SRC/linux-apfs-rw/apfs.ko" | tr ',' ' '); do
     grep -qx "$d" "$ird/modules/order" && continue
+    grep -qE "(^|/)${d}\.ko" "$mdir/modules.builtin" 2>/dev/null && continue  # built in
     dep=$(grep -E "(^|/)${d}\.ko(\.[a-z]+)?:" "$mdir/modules.dep" | head -n1 | cut -d: -f1)
     [ -n "$dep" ] || die "apfs dependency $d not found in $kver"
     case "$dep" in *.ko.xz) xz -dc "$mdir/$dep" > "$ird/modules/$d.ko";; *) cp "$mdir/$dep" "$ird/modules/$d.ko";; esac
@@ -257,7 +285,7 @@ PY
   mv -f "$CVM/vmlinuz.new" "$CVM/vmlinuz"; mv -f "$CVM/initrd.img.new" "$CVM/initrd.img"
   echo "$kver" > "$CVM/KVER"
   rm -rf "$w"
-  stamp companion "$kver $apfsref v2"
+  stamp companion "$kver $apfsref v3"
   log "USB-host VM ready: $CVM/vmlinuz + initrd.img (kernel $kver, $(echo $order | wc -w) modules + apfs)"
 }
 

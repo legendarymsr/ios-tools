@@ -32,6 +32,7 @@ PREFIX="${PREFIX:-/opt/inferno-restore}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 ECID="${ECID:-0x1122334455667788}"
 MUX_PORT="${MUX_PORT:-27015}"
+INFERNO_BUILD="${INFERNO_BUILD:-/root/Inferno/build}"
 export DATA PREFIX MUX_PORT
 export USB_SOCK="$R/usb.sock"
 DISKS="root firmware syscfg ctrl_bits nvram effaceable panic_log sep_nvram sep_ssc"
@@ -99,11 +100,11 @@ set -a; . "$DATA/run.env"; set +a
 [ -n "${RAMDISK:-}" ] && [ -f "$RAMDISK" ] || die "restore ramdisk (RAMDISK in run.env) missing - re-run step 4"
 [ -f "$DATA/root_ticket.der" ] || die "missing $DATA/root_ticket.der - re-run step 4"
 for f in $DISKS; do [ -f "$DATA/$f" ] || die "missing disk $DATA/$f - re-run step 4"; done
-[ -x /root/Inferno/build/qemu-system-aarch64 ] || die "Inferno is not built - run step 3"
+[ -x "$INFERNO_BUILD/qemu-system-aarch64" ] || die "Inferno is not built - run step 3"
 # v1.2.7/v1.2.8 patch Inferno (usb-tcp-remote crash, DART error race);
 # step 3 applies it and rebuilds just that file (a few minutes).
-if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-5' /root/Inferno/build/.ios-tools-patches; then
-  die "Inferno needs the v1.2.11 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
+if [ "${SKIP_PATCH_CHECK:-0}" != 1 ] && ! grep -qsx 'ios-tools-patches-6' "$INFERNO_BUILD/.ios-tools-patches"; then
+  die "Inferno needs the v1.3.0 patches (USB link on both sides + DART): run step 3 again (recompiles two files + relink, ~5-10 min), then this step"
 fi
 [ -f "$HERE/run-t8030.sh" ] || die "run-t8030.sh missing next to $0"
 
@@ -116,6 +117,15 @@ elif [ -f "${RESTORE:-$DATA/Restore}/BuildManifest.plist" ] \
   IPSW_ARG="${RESTORE:-$DATA/Restore}"
 else die "the IPSW (${IPSW:-?}) is gone and Restore/ has no OS image - re-run step 4 to download it again"; fi
 log "IPSW: $IPSW_ARG"
+# idevicerestore reads it from this chroot: make sure it is a readable IPSW
+python3 - "$IPSW_ARG" <<'PY' || die "the IPSW $IPSW_ARG is not readable or has no BuildManifest.plist - re-run step 4"
+import os, sys, zipfile
+p = sys.argv[1]
+if os.path.isdir(p):
+    sys.exit(0 if os.access(os.path.join(p, "BuildManifest.plist"), os.R_OK) else 1)
+with zipfile.ZipFile(p) as z:
+    z.getinfo("BuildManifest.plist")
+PY
 
 avail_kb=$(df -Pk "$DATA" | awk 'NR==2{print $4}')
 [ "${avail_kb:-0}" -gt 6291456 ] || warn "less than 6 GB free on $DATA - the restored disk needs ~5 GB"
@@ -443,6 +453,8 @@ stage1_once() {
   mkdir -p "$R/cache"
   local irc
   set -o pipefail
+  # ASR waits up to 10 min per message under TCG (patched idevicerestore)
+  IDEVICERESTORE_ASR_TIMEOUT_MS="${ASR_TIMEOUT_MS:-600000}" \
   USBMUXD_SOCKET_ADDRESS="127.0.0.1:$MUX_PORT" stdbuf -oL -eL \
     idevicerestore --erase --restore-mode --no-input --plain-progress -i "$ECID" -T "$DATA/root_ticket.der" \
       --cache-path "$R/cache" "$IPSW_ARG" 2>&1 | tee "$R/idevicerestore.log.raw" | progress_filter
@@ -509,6 +521,12 @@ C="$SYSVOL/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e"
 [ -f "$DATA/restore/launchd.plist.orig" ] || cp "$L" "$DATA/restore/launchd.plist.orig"
 if [ -e "$SYSVOL/.ios-tools-fs-patched" ]; then echo "[*] dyld cache already patched"; else
   [ -f "$C" ] || { echo "[ERROR] no dyld cache at $C"; exit 3; }
+  # linux-apfs-rw cannot write APFS-compressed files: if the cache is one,
+  # replace it with a plain copy first (same owner/mode).
+  if ! python3 -c "import sys; open(sys.argv[1], \"r+b\").close()" "$C" 2>/dev/null; then
+    echo "[*] dyld cache is not writable in place (APFS-compressed?) - rewriting it as a plain file (~1.5 GB)"
+    cp -p "$C" "$C.ios-tools.tmp" && mv -f "$C.ios-tools.tmp" "$C"
+  fi
   echo "[*] InfernoFSPatcher: $C"
   inferno_fs_patcher "$C"
   touch "$SYSVOL/.ios-tools-fs-patched"

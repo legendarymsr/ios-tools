@@ -1,5 +1,5 @@
 diff --git a/hw/usb/hcd-tcp.c b/hw/usb/hcd-tcp.c
-index 8d6110a..46146c6 100644
+index 8d6110a..8118f9f 100644
 --- a/hw/usb/hcd-tcp.c
 +++ b/hw/usb/hcd-tcp.c
 @@ -29,6 +29,7 @@
@@ -76,19 +76,58 @@ index 8d6110a..46146c6 100644
  }
  
  static ssize_t tcp_usb_read(QIOChannel *ioc, void *buf, size_t len)
-@@ -480,9 +530,21 @@ static void usb_tcp_host_attach(USBPort *port)
+@@ -261,6 +311,17 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+             pkt->addr = pkt_hdr.addr;
+             assert_true(bql_locked());
+ 
++            /*
++             * ios-tools: iOS may have turned USB off (re-enumeration) while
++             * this request was on the wire. usb_handle_packet() asserts the
++             * device is attached, so answer NODEV instead of aborting.
++             */
++            if (pkt->dev == NULL || pkt->dev->state != USB_STATE_DEFAULT) {
++                pkt->p.status = USB_RET_NODEV;
++                usb_tcp_host_respond_packet(s, pkt);
++                g_steal_pointer(&pkt);
++                break;
++            }
+             usb_handle_packet(pkt->dev, &pkt->p);
+             usb_tcp_host_respond_packet(s, pkt);
+             g_steal_pointer(&pkt);
+@@ -305,12 +366,17 @@ static void coroutine_fn usb_tcp_host_msg_loop_co(void *opaque)
+         case TCP_USB_RESET:
+             DPRINTF("%s: TCP_USB_RESET\n", __func__);
+             assert_true(bql_locked());
+-            usb_device_reset(port->dev);
++            if (port->dev != NULL && port->dev->attached) {
++                usb_device_reset(port->dev);
++            }
+             break;
+             ;
+         default:
+-            assert_not_reached();
+-            break;
++            /* ios-tools: a corrupt stream must not abort the iOS VM */
++            error_report("usb-tcp-host: unknown message type %u from the USB host, "
++                         "reconnecting", hdr.type);
++            usb_tcp_host_closed(s);
++            return;
+         }
+     }
+ 
+@@ -480,9 +546,21 @@ static void usb_tcp_host_attach(USBPort *port)
      }
  
      if (port->dev == NULL || !port->dev->attached) {
 +        info_report("usb-tcp-host: attach on port %d without an attached device, not connecting",
 +                    port->index);
-         return;
-     }
- 
-+    if (!s->closed) {
 +        return;
 +    }
 +
++    if (!s->closed) {
+         return;
+     }
+ 
 +    if (usb_tcp_host_retry_count == 0) {
 +        info_report("usb-tcp-host: iOS turned USB on, connecting to %s (type %d port %u)",
 +                    s->conn_addr ? s->conn_addr : "(default)", s->conn_type, s->conn_port);
@@ -98,7 +137,7 @@ index 8d6110a..46146c6 100644
      switch (s->conn_type) {
      case TCP_REMOTE_CONN_TYPE_UNIX:
          sock = usb_tcp_host_connect_unix(s, &err);
-@@ -498,9 +560,18 @@ static void usb_tcp_host_attach(USBPort *port)
+@@ -498,9 +576,18 @@ static void usb_tcp_host_attach(USBPort *port)
      }
  
      if (sock == -1) {

@@ -120,6 +120,9 @@ fi
 if [ "$MODE" = "1" ]; then
   if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
     INITRD="-initrd $RAMDISK"
+    # restored reboots when stage 1 is done: exit instead of booting the
+    # ramdisk again, so restore-ios.sh sees the VM close.
+    INITRD="$INITRD -no-reboot"
     echo "[*] restore mode: booting the restore ramdisk $(basename "$RAMDISK")"
   else
     echo "[ERROR] restore mode but no restore ramdisk found (RAMDISK in run.env) - re-run step 4"

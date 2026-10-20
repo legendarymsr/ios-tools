@@ -1,0 +1,33 @@
+diff --git a/src/libirecovery.c b/src/libirecovery.c
+index 35341f9..fe9305a 100644
+--- a/src/libirecovery.c
++++ b/src/libirecovery.c
+@@ -3293,15 +3293,26 @@ irecv_error_t irecv_device_event_subscribe(irecv_device_event_context_t *context
+ 		struct _irecv_event_handler_info info;
+ 		cond_init(&info.startup_cond);
+ 		mutex_init(&info.startup_mutex);
++		int usb_ok = 1;
+ #ifndef _WIN32
+ #ifndef HAVE_IOKIT
+-		libusb_init(&irecv_hotplug_ctx);
++		/*
++		 * ios-tools: no usable USB here (Android chroot: no usbfs, or the
++		 * uevent netlink socket is denied). Without this check the event
++		 * thread used a NULL libusb context and crashed. Restore-mode
++		 * devices still work through usbmuxd.
++		 */
++		if (libusb_init(&irecv_hotplug_ctx) != 0) {
++			irecv_hotplug_ctx = NULL;
++			usb_ok = 0;
++			debug("%s: libusb_init failed, no USB (DFU/recovery) device events\n", __func__);
++		}
+ #endif
+ #endif
+ 		collection_init(&devices);
+ 		mutex_init(&device_mutex);
+ 		mutex_lock(&info.startup_mutex);
+-		if (thread_new(&th_event_handler, _irecv_event_handler, &info) == 0) {
++		if (usb_ok && thread_new(&th_event_handler, _irecv_event_handler, &info) == 0) {
+ 			cond_wait(&info.startup_cond, &info.startup_mutex);
+ 		}
+ 		mutex_unlock(&info.startup_mutex);

@@ -30,7 +30,7 @@ public final class Steps {
             "cp {P}/setup-build-deps.sh /data/local/debian/root/ 2>/dev/null; "
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/setup-build-deps.sh'"),
         new Step("3. Compile Inferno / qemu-t8030 in the chroot (long)",
-            "cp {P}/build-inferno.sh {P}/inferno-usb-tcp-remote-fix.patch {P}/inferno-usb-tcp-remote-async.patch {P}/inferno-usb-tcp-remote-async-v129.patch {P}/inferno-usb-tcp-remote-async-v1210.patch {P}/inferno-usb-tcp-host-retry.patch {P}/inferno-dart-error-lock.patch /data/local/debian/root/ 2>/dev/null; "
+            "cp {P}/build-inferno.sh {P}/inferno-usb-tcp-remote-fix.patch {P}/inferno-usb-tcp-remote-async.patch {P}/inferno-usb-tcp-remote-async-v129.patch {P}/inferno-usb-tcp-remote-async-v1210.patch {P}/inferno-usb-tcp-host-retry-v1211.patch {P}/inferno-usb-tcp-host-retry.patch {P}/inferno-dart-error-lock.patch /data/local/debian/root/ 2>/dev/null; "
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/build-inferno.sh'"),
         new Step("4. Download & Configure (Apple IPSW)",
             // Copy scripts in, then run the downloader inside the chroot so
@@ -51,7 +51,7 @@ public final class Steps {
             // ChefKiss filesystem patches, and marks the disk RESTORED. Runs
             // detached inside the chroot; tapping again re-attaches.
             "cp {P}/restore-ios.sh {P}/companion-vm.sh {P}/companion-init.sh "
-          + "{P}/build-restore-tools.sh {P}/idevicerestore-inferno.patch "
+          + "{P}/build-restore-tools.sh {P}/idevicerestore-inferno.patch {P}/idevicerestore-tcg-timeouts.patch {P}/libirecovery-no-usb.patch "
           + "{P}/run-t8030.sh {P}/patch-launchd.py {P}/check-sep.py /data/local/debian/root/ 2>/dev/null; "
           + "chmod 0755 /data/local/debian/root/restore-ios.sh /data/local/debian/root/companion-vm.sh "
           + "/data/local/debian/root/build-restore-tools.sh /data/local/debian/root/run-t8030.sh; "
