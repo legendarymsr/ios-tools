@@ -136,6 +136,35 @@ fi
 # (companion-vm.sh / ChefKiss companion VM). restore-ios.sh sets
 # USB_CONN_TYPE=unix USB_CONN_ADDR=<socket>; otherwise Inferno's default
 # (UNIX socket /tmp/InfernoUSBRemote) is used.
+# --- Network (reverse tethering, ChefKiss's documented method) ---------------
+# The iPhone has no Wi-Fi hardware in Inferno. On a normal boot the USB-host VM
+# (companion-vm.sh net) is started first: its usbmuxd switches iOS to USB mode 3
+# (usbmux + CDC-NCM ethernet), the NCM link is bridged to the VM's QEMU slirp
+# NIC, and slirp's DHCP gives iOS 10.0.2.20 (gateway 10.0.2.2, DNS 10.0.2.3).
+# Traffic goes out through the phone's own connection; no root network setup.
+# NET=0 boots without USB/network.
+HERE=$(cd "$(dirname "$0")" && pwd)
+PREFIX="${PREFIX:-/opt/inferno-restore}"
+NET_STARTED=0
+if [ "$MODE" != "1" ] && [ "${NET:-1}" = 1 ] && [ -z "${USB_CONN_TYPE:-}" ]; then
+  echo "[net] setting up network for iOS (USB ethernet via the USB-host VM)"
+  if ! grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
+    echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm + bridge modules) - running build-restore-tools.sh (a few minutes, once)"
+    bash "$HERE/build-restore-tools.sh" || echo "[net] ERROR: build-restore-tools.sh failed - booting without network"
+  fi
+  if grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
+    bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
+    if DATA="$DATA" bash "$HERE/companion-vm.sh" net; then
+      USB_CONN_TYPE=unix; USB_CONN_ADDR="${USB_SOCK:-$DATA/restore/usb.sock}"; NET_STARTED=1
+      echo "[net] USB-host VM up. Once iOS is on the home screen, its USB ethernet should come up within ~1-2 min."
+      echo "[net] status lines follow ([net] ...); in iOS: Settings shows an Ethernet entry. If no IP: 'ipconfig set en0 dhcp' (root shell)."
+      ( tail -n0 -F "$DATA/companion/job.log" 2>/dev/null | grep --line-buffered -E '^\[net\]|Switching device|mode' ) &
+    else
+      echo "[net] ERROR: the USB-host VM did not start (see above) - booting iOS without network"
+    fi
+  fi
+fi
+
 USBOPT=""
 [ -n "${USB_CONN_TYPE:-}" ] && USBOPT="$USBOPT,usb-conn-type=$USB_CONN_TYPE"
 [ -n "${USB_CONN_ADDR:-}" ] && USBOPT="$USBOPT,usb-conn-addr=$USB_CONN_ADDR"
@@ -175,13 +204,15 @@ echo "[*] -smp ${SMP:-7} (= $(( ${SMP:-7} - 1 )) A13 cores + 1 SEP core)"
 
 echo "[*] machine: t8030,trustcache=$TRUSTCACHE,ticket=$TICKET,sep-fw=$SEPFW,sep-rom=$SEPROM,kaslr-off=true$USBOPT"
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
-exec "$QEMU" -L "$QDATA" \
+rc=0
+"$QEMU" -L "$QDATA" \
   -accel "$ACCEL" \
   -M t8030,trustcache="$TRUSTCACHE",ticket="$TICKET",sep-fw="$SEPFW",sep-rom="$SEPROM",kaslr-off=true$USBOPT \
   -kernel "$KERNEL" -dtb "$DTB" \
   -append "$BOOTARGS" \
   -smp "${SMP:-7}" -m "${MEM:-4G}" ${SERIAL_QEMU:--serial mon:stdio} \
   ${DISPLAY_QEMU:--display vnc=127.0.0.1:0} \
+  -monitor "unix:$DATA/qemu-monitor.sock,server=on,wait=off" \
   $INITRD \
   -drive file="$DATA/sep_nvram,if=pflash,format=raw" \
   -drive file="$DATA/sep_ssc,if=pflash,format=raw" \
@@ -191,4 +222,10 @@ exec "$QEMU" -L "$QDATA" \
   -drive file="$DATA/ctrl_bits",format=raw,if=none,id=ctrl_bits -device nvme-ns,drive=ctrl_bits,bus=nvme-bus.0,nsid=4,nstype=4,logical_block_size=4096,physical_block_size=4096 \
   -drive file="$DATA/nvram",if=none,format=raw,id=nvram     -device apple-nvram,drive=nvram,bus=nvme-bus.0,nsid=5,nstype=5,id=nvram,logical_block_size=4096,physical_block_size=4096 \
   -drive file="$DATA/effaceable",format=raw,if=none,id=effaceable -device nvme-ns,drive=effaceable,bus=nvme-bus.0,nsid=6,nstype=6,logical_block_size=4096,physical_block_size=4096 \
-  -drive file="$DATA/panic_log",format=raw,if=none,id=panic_log -device nvme-ns,drive=panic_log,bus=nvme-bus.0,nsid=7,nstype=8,logical_block_size=4096,physical_block_size=4096
+  -drive file="$DATA/panic_log",format=raw,if=none,id=panic_log -device nvme-ns,drive=panic_log,bus=nvme-bus.0,nsid=7,nstype=8,logical_block_size=4096,physical_block_size=4096 || rc=$?
+if [ "$NET_STARTED" = 1 ]; then
+  echo "[net] iOS VM exited ($rc) - stopping the USB-host VM"
+  bash "$HERE/companion-vm.sh" stop || true
+  kill $(jobs -p) 2>/dev/null || true
+fi
+exit $rc

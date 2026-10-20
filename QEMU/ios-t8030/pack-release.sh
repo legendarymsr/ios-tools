@@ -76,7 +76,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.4.9: VNC touch = real drags (press, streamed moves, release); Swipe up + Home buttons. Disks and restore state are kept."
+ui_print "- v1.5.0: iOS network via USB ethernet (reverse tethering through the USB-host VM, slirp DHCP); Power off VM button. Disks and state kept."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -92,7 +92,7 @@ PAYLOAD=(
   inferno-usb-tcp-remote-async-v130.patch inferno-usb-tcp-remote-fix.patch
   jailbreak-prep.sh libirecovery-no-usb.patch patch-launchd.py prepare-ios-files.sh
   restore-ios.sh run-t8030.sh setup-build-deps.sh setup-debian-chroot.sh
-  vhci-usb.sh vhci-bridge.c vhci-bridge.tgz LICENSE-xz xz-arm64
+  vhci-usb.sh vm-power.sh vhci-bridge.c vhci-bridge.tgz LICENSE-xz xz-arm64
 )
 for f in "${PAYLOAD[@]}"; do
   [ -e "$HERE/$f" ] && cp -a "$HERE/$f" "$STAGE/payload/"

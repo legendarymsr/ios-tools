@@ -200,8 +200,13 @@ try_linux_apply() {
     return 1
   fi
   [ -f "$DATA/root" ] || { warn "no $DATA/root disk"; return 1; }
-  if pgrep -f qemu-system-aarch64 >/dev/null 2>&1; then
-    warn "an emulator is running - power the VM off first"; return 1
+  if pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null 2>&1; then
+    if [ "${POWEROFF_VM:-1}" = 1 ] && [ -f "$HERE/vm-power.sh" ]; then
+      warn "the iOS VM is running - powering it off first (POWEROFF_VM=0 to refuse instead)"
+      DATA="$DATA" bash "$HERE/vm-power.sh" off || { warn "could not power the VM off"; return 1; }
+    else
+      warn "an emulator is running - power the VM off first ('Power off VM' button)"; return 1
+    fi
   fi
   local mnt="$JB/mnt" v found=""
   mkdir -p "$mnt"
@@ -230,7 +235,12 @@ try_companion_apply() {
   [ -s /opt/inferno-restore/companion/initrd.img ] && [ -f "$HERE/companion-vm.sh" ] \
     || { warn "USB-host VM not built (step 5 builds it)"; return 1; }
   if pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null 2>&1; then
-    warn "an emulator is running - power the VM off first"; return 1
+    if [ "${POWEROFF_VM:-1}" = 1 ] && [ -f "$HERE/vm-power.sh" ]; then
+      warn "the iOS VM is running - powering it off first (POWEROFF_VM=0 to refuse instead)"
+      DATA="$DATA" bash "$HERE/vm-power.sh" off || { warn "could not power the VM off"; return 1; }
+    else
+      warn "an emulator is running - power the VM off first ('Power off VM' button)"; return 1
+    fi
   fi
   if [ ! -f "$DATA/root.pre-jailbreak" ]; then
     local need avail

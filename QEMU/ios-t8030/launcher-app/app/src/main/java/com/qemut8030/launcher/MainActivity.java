@@ -39,6 +39,8 @@ public class MainActivity extends AppCompatActivity {
     private long waitStartedMs = 0;
     private int waitLogIndex = -1;  // start offset of the single waiting line in logText
     private MaterialButton vncButton;
+    private MaterialButton powerButton;
+    private volatile boolean poweringOff = false;
     private volatile boolean vncWatch = false;
     private volatile boolean resumed = false;
     static final String VNC_HOST = "127.0.0.1";
@@ -62,6 +64,16 @@ public class MainActivity extends AppCompatActivity {
         vncButton.setLayoutParams(vlp);
         vncButton.setOnClickListener(v -> openViewer());
         buttons.addView(vncButton);
+
+        powerButton = new MaterialButton(this);
+        powerButton.setText("Power off VM");
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        plp.topMargin = 8;
+        powerButton.setLayoutParams(plp);
+        powerButton.setOnClickListener(v -> powerOff());
+        buttons.addView(powerButton);
 
         for (final Steps.Step s : Steps.STEPS) {
             MaterialButton btn = new MaterialButton(this);
@@ -209,8 +221,28 @@ public class MainActivity extends AppCompatActivity {
     private void setButtonsEnabled(boolean en) {
         for (int i = 0; i < buttons.getChildCount(); i++) {
             View b = buttons.getChildAt(i);
-            if (b != vncButton) b.setEnabled(en);   // viewer stays usable while a VM runs
+            if (b != vncButton && b != powerButton) b.setEnabled(en);   // viewer stays usable while a VM runs
         }
+    }
+
+    /** Runs alongside a busy step (the Boot step stays busy while the VM runs). */
+    private void powerOff() {
+        if (payload == null) { appendLog("Power off: waiting for root/payload - tap again in a moment."); ensurePayloadThen(null); return; }
+        if (poweringOff) { appendLog("Power off already in progress…"); return; }
+        poweringOff = true;
+        powerButton.setEnabled(false);
+        String cmd = Steps.POWER_OFF.replace("{P}", payload.getAbsolutePath());
+        appendLog("\n$ " + cmd);
+        ScriptRunner.run(cmd, new ScriptRunner.Listener() {
+            @Override public void onLine(String line) { main.post(() -> appendLog(line)); }
+            @Override public void onFinished(int code) {
+                main.post(() -> {
+                    appendLog("[power off exit " + code + "]");
+                    poweringOff = false;
+                    powerButton.setEnabled(true);
+                });
+            }
+        });
     }
 
     private void openViewer() {

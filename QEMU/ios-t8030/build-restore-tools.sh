@@ -184,7 +184,7 @@ CVM="$PREFIX/companion"
 # Modules the VM needs (Debian builds all of these as =m; deps are resolved
 # from modules.dep). virtio-pci/net/blk + 9p for the shared folders, EHCI for
 # the emulated iPhone, apfs for the restored System volume.
-WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p usbcore ehci_hcd ehci_pci"
+WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p usbcore ehci_hcd ehci_pci cdc_ncm bridge"
 
 build_companion() {
   local kpkg kver
@@ -194,7 +194,7 @@ build_companion() {
   [ -n "$kpkg" ] || die "could not resolve Debian's current arm64 kernel package (apt-cache depends linux-image-arm64)"
   kver=${kpkg#linux-image-}
   local apfsref; apfsref=$(repo_field linux-apfs-rw 3)
-  if stamp_ok companion "$kver $apfsref v4" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
+  if stamp_ok companion "$kver $apfsref v5" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
     log "USB-host VM kernel/initramfs already built ($kver)"; return 0
   fi
   log "USB-host VM: Debian kernel $kver"
@@ -305,7 +305,7 @@ PY
   mv -f "$CVM/vmlinuz.new" "$CVM/vmlinuz"; mv -f "$CVM/initrd.img.new" "$CVM/initrd.img"
   echo "$kver" > "$CVM/KVER"
   rm -rf "$w"
-  stamp companion "$kver $apfsref v4"
+  stamp companion "$kver $apfsref v5"
   log "USB-host VM ready: $CVM/vmlinuz + initrd.img (kernel $kver, $(echo $order | wc -w) modules + apfs)"
 }
 

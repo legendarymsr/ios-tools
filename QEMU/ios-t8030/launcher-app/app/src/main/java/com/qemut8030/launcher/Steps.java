@@ -47,6 +47,11 @@ public final class Steps {
       + "fi; "
       + "true; ";
 
+    /** "Power off VM" button: monitor system_powerdown, ~20 s, quit, then kill. */
+    public static final String POWER_OFF =
+        "cp -f \"{P}\"/vm-power.sh /data/local/debian/root/ && chmod 0755 /data/local/debian/root/vm-power.sh; "
+      + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/vm-power.sh off'";
+
     public static final Step[] STEPS = new Step[] {
         new Step("1. Install & update Debian (chroot)",
             "ROOTFS=/data/local/debian sh {P}/setup-debian-chroot.sh"),
