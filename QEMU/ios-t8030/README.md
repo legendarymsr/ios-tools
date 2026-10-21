@@ -322,6 +322,24 @@ Limits:
 6. **Boot iOS (t8030)**: runs `run-t8030.sh` (VNC on `127.0.0.1:5900`). The
    built-in viewer opens by itself once the VNC port is up. The first boot
    after the restore finishes data migration.
+6b. **Boot iOS with network (experimental)**: `NET=1 run-t8030.sh`, USB
+   ethernet (reverse tethering) through the USB-host VM. Can panic iOS 14.0 on
+   the mode-3 switch (it then retries once without network), or the guest may
+   never take a DHCP address. Prefer 6c.
+6c. **Force network (companion first + NET=1)**: runs `force-net.sh`. It stops
+   any running VMs, starts the USB-host VM in net mode first
+   (`companion-vm.sh net`: mode 3 + bridge to SLIRP), then boots iOS with
+   `NET=1 NET_RETRY=0`. iOS still needs one DHCP kick: once the home screen is
+   up on VNC, run on the guest serial console
+
+   ```sh
+   /usr/sbin/ipconfig set en0 DHCP
+   /usr/sbin/ipconfig getifaddr en0   # expect 10.0.2.20
+   ```
+
+   Gateway `10.0.2.2`, DNS `10.0.2.3` (the USB-host VM's SLIRP). If iOS
+   panics on the mode-3 switch, boot with step 6 (no network), start
+   `companion-vm.sh net` afterwards, then run the same `ipconfig` commands.
 7. **Show READY / restore status**: shows what's configured, what's still
    missing, the restore state, and the jailbreak status.
 8. **Jailbreak bootstrap (after restore)**: see [Jailbreak](#jailbreak-what-you-get-honestly).
@@ -422,6 +440,8 @@ pages:
 - `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line;
   sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
   `SERIAL_QEMU` overrides.
+- `force-net.sh` — **v1.5.3** step 6c: USB-host VM in net mode first, then
+  `NET=1` boot; prints the guest `ipconfig` commands.
 - `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in
   `InfernoData/restore/state`).
 - `build-restore-tools.sh` — **v1.2.0** builds `/opt/inferno-restore`
