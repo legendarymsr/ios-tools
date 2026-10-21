@@ -363,7 +363,6 @@ cd /root/InfernoData && bash /root/run-t8030.sh
 # restore/upgrade ramdisk:
 RESTORE_MODE=1 bash /root/run-t8030.sh   # force the restore ramdisk
 RESTORE_MODE=0 bash /root/run-t8030.sh   # force a normal boot
-```
 
 # restore (what step 5 does):
 DATA=/root/InfernoData bash /root/restore-ios.sh          # start / re-attach
@@ -377,6 +376,7 @@ DATA=/root/InfernoData bash /root/companion-vm.sh usbmux   # usbmuxd on 127.0.0.
 USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 /opt/inferno-restore/bin/idevice_id -l
 DATA=/root/InfernoData bash /root/companion-vm.sh apfs-run 'ls "$SYSVOL"'
 DATA=/root/InfernoData bash /root/companion-vm.sh stop
+```
 
 ## Jailbreak (what you get, honestly)
 
