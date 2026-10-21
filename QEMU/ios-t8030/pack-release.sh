@@ -76,7 +76,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.5.2: step 8 installs Cydia.app + one-shot uicache at boot (re-run step 8 on an already bootstrapped disk)."
+ui_print "- v1.5.3: step 6c forces network (companion first + NET=1), then run ipconfig set en0 DHCP on the guest."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -84,7 +84,7 @@ CUS
 cp "$APK" "$STAGE/app/qemu-t8030-launcher.apk"
 # payload scripts + patches
 PAYLOAD=(
-  build-inferno.sh build-restore-tools.sh check-sep.py companion-init.sh companion-vm.sh
+  build-inferno.sh build-restore-tools.sh check-sep.py companion-init.sh companion-vm.sh force-net.sh
   download-and-configure.sh idevicerestore-inferno.patch idevicerestore-tcg-timeouts.patch
   inferno-dart-error-lock.patch inferno-usb-tcp-host-retry.patch inferno-usb-tcp-host-retry-v1211.patch
   inferno-usb-tcp-host-retry-v130.patch inferno-usb-tcp-remote-async.patch
