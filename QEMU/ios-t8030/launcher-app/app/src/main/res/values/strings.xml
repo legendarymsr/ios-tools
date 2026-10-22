@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">iOS Emu (t8030)</string>
+    <string name="logs_name">iOS Emu Logs</string>
     <string name="instructions">Boot an emulated iPhone 11 (t8030) in Inferno.\nTCG only — SLOW, no GPU, bring-up quality.\nFlow: chroot → build deps → build Inferno → Download &amp; Configure (pulls IPSW from Apple, ~5.5 GB) → Boot.\nNothing from Apple is shipped here; the IPSW is fetched at runtime for your own use.</string>
 </resources>

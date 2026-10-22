@@ -16,18 +16,19 @@
         android:textColor="@color/muted" android:textSize="13sp"
         android:padding="10dp" android:background="@color/surface" />
 
-    <ScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+    <ScrollView android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1"
         android:paddingTop="10dp" android:paddingBottom="10dp">
         <LinearLayout android:id="@+id/buttons" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:orientation="vertical" />
     </ScrollView>
 
     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="Log" android:textColor="@color/text" android:textStyle="bold"
+        android:text="Log (full view: the iOS Emu Logs icon)" android:textColor="@color/text" android:textStyle="bold"
         android:paddingBottom="4dp" />
 
     <ScrollView android:id="@+id/logScroll" android:layout_width="match_parent"
-        android:layout_height="0dp" android:layout_weight="1"
+        android:layout_height="160dp"
         android:background="@color/surface" android:padding="8dp">
         <TextView android:id="@+id/logText" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:textColor="@color/text"

@@ -54,6 +54,8 @@ public class MainActivity extends AppCompatActivity {
         logText = findViewById(R.id.logText);
         logScroll = findViewById(R.id.logScroll);
         buttons = findViewById(R.id.buttons);
+        LogStore.init(this);
+        LogStore.append("\n=== launcher started " + new java.util.Date() + " (v" + BuildConfig.VERSION_NAME + ") ===");
 
         vncButton = new MaterialButton(this);
         vncButton.setText("Open VNC viewer (" + VNC_HOST + ":" + VNC_PORT + ")");
@@ -203,6 +205,7 @@ public class MainActivity extends AppCompatActivity {
         }
         waitLogIndex = logText.getText().length();
         logText.append(msg);
+        LogStore.append(msg);
         logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
     }
 
@@ -286,6 +289,7 @@ public class MainActivity extends AppCompatActivity {
     private void appendLog(String line) {
         if (logText.getText().length() > 0) logText.append("\n");
         logText.append(line);
+        LogStore.append(line);
         logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
     }
 }
