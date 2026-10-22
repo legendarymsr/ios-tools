@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.5.7.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.5.8.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.5.7.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.5.8.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -336,8 +336,10 @@ log strip under the buttons.
    (`companion-vm.sh net`: mode 3 + bridge to SLIRP), then boots iOS with
    `NET=1 NET_RETRY=0`. iOS only takes an address when told to, and its USB
    ethernet is not always `en0`, so 6c also types into the root shell on the
-   serial console (needs step 8 applied): DHCP on every `en*` interface
-   (`ifconfig -l`, else `en0`-`en9`), then a check every 30 s. The first
+   serial console (needs step 8 applied): DHCP on `en0`-`en9`, then a
+   check every 30 s. Each command is typed 8 bytes at a time after a Ctrl-C
+   (long bursts lose characters on the guest serial port and leave bash at
+   its `>` continuation prompt). The first
    interface with a `10.0.2.x` lease wins, the kick stops and logs
    `[*] iOS has network: en2 10.0.2.15 ...`; it keeps trying for as long as
    the VM runs. By hand, on the serial console (`enN` = that interface):
@@ -451,7 +453,7 @@ pages:
   sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
   `SERIAL_QEMU` overrides.
 - `force-net.sh` — **v1.5.3** step 6c: USB-host VM in net mode first, then
-  `NET=1` boot; types the guest `ipconfig` DHCP kick (every `en*` interface) into the serial console.
+  `NET=1` boot; types the guest `ipconfig` DHCP kick (`en0`-`en9`) into the serial console.
 - `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in
   `InfernoData/restore/state`).
 - `build-restore-tools.sh` — **v1.2.0** builds `/opt/inferno-restore`

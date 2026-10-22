@@ -31,27 +31,42 @@ echo "[*] iOS VM pid $IOS"
 echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
 
 # iOS only asks for an address when told to, and the USB ethernet is not
-# always en0. Once the root shell is up, run DHCP on every en* interface
-# (from ifconfig -l, else en0-en9) and check every 30 s; the first one with
-# a 10.0.2.x lease wins and the kick stops. Runs as long as the VM does.
-IFLIST='$( (ifconfig -l || /sbin/ifconfig -l) 2>/dev/null || echo en0 en1 en2 en3 en4 en5 en6 en7 en8 en9)'
+# always en0. Once the root shell is up, run DHCP on en0-en9 and check every
+# 30 s; the first interface with a 10.0.2.x lease wins and the kick stops.
+# Runs as long as the VM does.
+#
+# Long lines sent in one burst lose characters on the guest serial port and
+# leave bash stuck at its ">" continuation prompt, so every command is
+# preceded by Ctrl-C (drops any half-typed line) and typed 8 bytes at a time.
+type_cmd() {
+  printf '\003' >&3
+  sleep 1
+  local s="$1"
+  while [ -n "$s" ]; do
+    printf '%s' "${s:0:8}" >&3
+    s=${s:8}
+    sleep 0.1
+  done
+  printf '\n' >&3
+}
+IFS_EN='en0 en1 en2 en3 en4 en5 en6 en7 en8 en9'
 (
   sleep 120
   n=0
   while kill -0 "$IOS" 2>/dev/null; do
     if [ $((n % 4)) = 0 ]; then
-      printf 'for i in %s; do case $i in en*) /usr/sbin/ipconfig set $i DHCP 2>/dev/null;; esac; done\n' "$IFLIST" >&3
+      type_cmd "for i in $IFS_EN; do /usr/sbin/ipconfig set \$i DHCP; done 2>/dev/null"
     fi
-    sleep 25
-    printf 'echo NETIF=$(for i in %s; do case $i in en*) a=$(/usr/sbin/ipconfig getifaddr $i 2>/dev/null); case $a in 10.0.2.*) echo $i:$a; break;; esac;; esac; done)\n' "$IFLIST" >&3
+    sleep 20
+    type_cmd "for i in $IFS_EN; do echo NETIF=\$i:\$(/usr/sbin/ipconfig getifaddr \$i); done 2>/dev/null"
     sleep 5
-    HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | tail -1 | cut -d= -f2)
+    HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | head -1 | cut -d= -f2)
     if [ -n "$HIT" ]; then
       echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} (gateway 10.0.2.2, DNS 10.0.2.3) - DHCP kick done"
       exit 0
     fi
     n=$((n + 1))
-    [ $((n % 10)) = 0 ] && echo "[*] DHCP kick: no 10.0.2.x lease on any en* interface yet ($((n / 2)) min), still trying"
+    [ $((n % 10)) = 0 ] && echo "[*] DHCP kick: no 10.0.2.x lease on en0-en9 yet ($((n / 2)) min), still trying"
   done
 ) &
 KICK=$!
