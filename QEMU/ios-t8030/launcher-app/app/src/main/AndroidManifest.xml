@@ -20,6 +20,7 @@
             android:name=".LogActivity"
             android:exported="true"
             android:label="@string/logs_name"
+            android:icon="@drawable/ic_logs"
             android:taskAffinity="com.qemut8030.launcher.logs"
             android:launchMode="singleTask">
             <intent-filter>
