@@ -36,8 +36,16 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/META-INF/com/google/android" "$STAGE/app" "$STAGE/payload/vhci-bridge"
 # module bits from last zip template if present, else recreate
-if [ -f "$HERE/qemu-t8030-launcher-v1.3.2.zip" ]; then
-  unzip -qo "$HERE/qemu-t8030-launcher-v1.3.2.zip" META-INF/* customize.sh service.sh -d "$STAGE"
+# (newest committed zip that still carries update-binary + service.sh)
+TEMPLATE=
+for z in $(ls "$HERE"/qemu-t8030-launcher-v*.zip 2>/dev/null | grep -v "v${VER}\.zip$" | sort -Vr); do
+  if unzip -l "$z" | grep 'update-binary' >/dev/null && unzip -l "$z" | grep ' service\.sh$' >/dev/null; then
+    TEMPLATE=$z; break
+  fi
+done
+if [ -n "$TEMPLATE" ]; then
+  echo "module template: $(basename "$TEMPLATE")"
+  unzip -qo "$TEMPLATE" META-INF/* customize.sh service.sh -d "$STAGE"
 else
   printf '#MAGISK\n' > "$STAGE/META-INF/com/google/android/updater-script"
 fi
