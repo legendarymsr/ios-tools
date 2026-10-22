@@ -30,30 +30,36 @@ IOS=$!
 echo "[*] iOS VM pid $IOS"
 echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
 
-# iOS only asks for an address when told to: once the root shell is up,
-# send "ipconfig set en0 DHCP" every 30 s until en0 reports 10.0.2.x.
+# iOS only asks for an address when told to, and the USB ethernet is not
+# always en0. Once the root shell is up, run DHCP on every en* interface
+# (from ifconfig -l, else en0-en9) and check every 30 s; the first one with
+# a 10.0.2.x lease wins and the kick stops. Runs as long as the VM does.
+IFLIST='$( (ifconfig -l || /sbin/ifconfig -l) 2>/dev/null || echo en0 en1 en2 en3 en4 en5 en6 en7 en8 en9)'
 (
   sleep 120
-  for i in $(seq 1 60); do
-    kill -0 "$IOS" 2>/dev/null || exit 0
-    printf '/usr/sbin/ipconfig set en0 DHCP\n' >&3
+  n=0
+  while kill -0 "$IOS" 2>/dev/null; do
+    if [ $((n % 4)) = 0 ]; then
+      printf 'for i in %s; do case $i in en*) /usr/sbin/ipconfig set $i DHCP 2>/dev/null;; esac; done\n' "$IFLIST" >&3
+    fi
     sleep 25
-    printf 'echo NETIP=$(/usr/sbin/ipconfig getifaddr en0)\n' >&3
+    printf 'echo NETIF=$(for i in %s; do case $i in en*) a=$(/usr/sbin/ipconfig getifaddr $i 2>/dev/null); case $a in 10.0.2.*) echo $i:$a; break;; esac;; esac; done)\n' "$IFLIST" >&3
     sleep 5
-    IP=$(grep -a -o 'NETIP=10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | tail -1 | cut -d= -f2)
-    if [ -n "$IP" ]; then
-      echo "[*] iOS has network: en0 $IP (gateway 10.0.2.2, DNS 10.0.2.3)"
+    HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | tail -1 | cut -d= -f2)
+    if [ -n "$HIT" ]; then
+      echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} (gateway 10.0.2.2, DNS 10.0.2.3) - DHCP kick done"
       exit 0
     fi
+    n=$((n + 1))
+    [ $((n % 10)) = 0 ] && echo "[*] DHCP kick: no 10.0.2.x lease on any en* interface yet ($((n / 2)) min), still trying"
   done
-  echo "[!] no DHCP address after 30 min - check the [net] lines above"
 ) &
 KICK=$!
 
 echo "[*] DHCP kick runs by itself; by hand on the serial console it is:"
-echo "/usr/sbin/ipconfig set en0 DHCP"
-echo "/usr/sbin/ipconfig getifaddr en0"
-echo "Expected: 10.0.2.20 (gateway 10.0.2.2, DNS 10.0.2.3)"
+echo "/usr/sbin/ipconfig set enN DHCP      (N: the USB ethernet, often en0)"
+echo "/usr/sbin/ipconfig getifaddr enN"
+echo "Expected: 10.0.2.x (gateway 10.0.2.2, DNS 10.0.2.3)"
 echo
 echo "[*] if it panics on mode-3, boot without NET=1, start companion after, then ipconfig"
 wait $IOS || true
