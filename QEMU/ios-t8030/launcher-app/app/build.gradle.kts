@@ -11,6 +11,16 @@ android {
         versionCode = 42
         versionName = "1.5.6"
     }
+    // Committed debug key (standard "android" passwords) so every build signs
+    // the same and installs over the previous one without an uninstall.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     buildTypes {
         release { isMinifyEnabled = false }
         debug { isDebuggable = true }
