@@ -8,8 +8,8 @@ android {
         applicationId = "com.qemut8030.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 39
-        versionName = "1.5.3"
+        versionCode = 40
+        versionName = "1.5.4"
     }
     buildTypes {
         release { isMinifyEnabled = false }

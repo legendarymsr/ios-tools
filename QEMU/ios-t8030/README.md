@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.5.3.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.5.4.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.5.3.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.5.4.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -329,8 +329,10 @@ Limits:
 6c. **Force network (companion first + NET=1)**: runs `force-net.sh`. It stops
    any running VMs, starts the USB-host VM in net mode first
    (`companion-vm.sh net`: mode 3 + bridge to SLIRP), then boots iOS with
-   `NET=1 NET_RETRY=0`. iOS still needs one DHCP kick: once the home screen is
-   up on VNC, run on the guest serial console
+   `NET=1 NET_RETRY=0`. iOS only takes an address when told to, so 6c also
+   types the DHCP kick into the root shell on the serial console (needs step 8
+   applied) every 30 s until it reports one, then logs
+   `[*] iOS has network: en0 10.0.2.20`. By hand, on the serial console:
 
    ```sh
    /usr/sbin/ipconfig set en0 DHCP
@@ -441,7 +443,7 @@ pages:
   sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
   `SERIAL_QEMU` overrides.
 - `force-net.sh` — **v1.5.3** step 6c: USB-host VM in net mode first, then
-  `NET=1` boot; prints the guest `ipconfig` commands.
+  `NET=1` boot; types the guest `ipconfig` DHCP kick into the serial console.
 - `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in
   `InfernoData/restore/state`).
 - `build-restore-tools.sh` — **v1.2.0** builds `/opt/inferno-restore`
