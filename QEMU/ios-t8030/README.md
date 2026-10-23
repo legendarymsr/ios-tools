@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.2.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.3.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.2.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.3.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -62,6 +62,26 @@ fix is skipped once their code changes):
    while (tap to wake). **Power off VM** stops it.
 5. **Status** — what is installed, built and running.
 6. **Forget the snapshot** — the next boot starts afresh.
+
+### Jailbreak and Sileo (no Apple account)
+
+Step 3 builds iOS jailbroken the way HackiOS does it: their `tools/mk-jb.sh` fetches the
+[Procursus](https://github.com/ProcursusTeam/Procursus) rootless bootstrap (apt, dpkg, a shell and the
+usual tools under `/var/jb`), [Sileo](https://github.com/Sileo/Sileo) (the package manager app) and
+[ElleKit](https://github.com/evelyneee/ellekit) (the tweak loader), and their build puts them into the
+system image. Every boot runs their `prep.sh` and refreshes the package lists.
+
+- **Sileo** is on the second home-screen page. It installs from apt repositories (Procursus is set up;
+  add others under Sources) and needs no Apple account and no sign-in of any kind. It is not Apple's
+  App Store: it installs command-line tools, tweaks and the apps that repositories package, not App Store
+  apps. Apple's own App Store icon stays, and it would want an Apple ID; you can ignore it.
+- Packages come over HTTPS from the repositories you add; Procursus is the only one at the start.
+- OpenSSH is installed (HackiOS preinstalls it) but nothing starts it, and there is no key or password
+  that lets anyone in.
+- **What you install lives in memory** (`/private/var` is a memory filesystem in HackiOS): a cold boot
+  starts from the clean image again. Install what you want, then **Save iOS snapshot**: resuming the
+  snapshot brings it all back.
+- `HACKIOS_JB=0` builds without the jailbreak.
 
 ### Snapshots: boot in seconds
 
@@ -106,7 +126,7 @@ The **iOS VM Logs** icon opens the full step log on its own screen (Copy / Clear
 ## Scripts
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
-  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`).
+  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`).
 - `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.

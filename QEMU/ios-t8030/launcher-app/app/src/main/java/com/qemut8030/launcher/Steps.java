@@ -4,7 +4,8 @@ public final class Steps {
     public static final String BANNER =
         "iOS 16.5 VM on this phone: HackiOS by OOSEX GANG (github.com/oosexgang,\n"
       + "hackios-web.vercel.app) - the unmodified iOS 16.5 user space on Apple's open-source XNU\n"
-      + "kernel, in QEMU's virt machine inside a Debian chroot, with network.\n"
+      + "kernel, in QEMU's virt machine inside a Debian chroot, with network, jailbroken their way\n"
+      + "(Procursus + Sileo: packages without an Apple account).\n"
       + "TCG only (no KVM, no GPU): slow - the home screen takes several minutes.\n"
       + "Their code is cloned at run time (kernel APSL 2.0, userland MIT) and iOS 16.5 is downloaded\n"
       + "from Apple's CDN onto this phone - nothing of theirs or Apple's is shipped in this app.\n"

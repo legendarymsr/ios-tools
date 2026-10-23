@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: iOS keeps its clock right after a snapshot and uses your time zone (run step 3 again, then save a new snapshot)"
+ui_print "- v@VER@: jailbroken like HackiOS (Procursus + Sileo, no Apple account) - run steps 2 and 3 again"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."

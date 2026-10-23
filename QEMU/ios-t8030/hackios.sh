@@ -26,7 +26,8 @@
 #      itself needs about 2.5-3 GB free), HACKIOS_NET=0 (no network; takes effect at the next build),
 #      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below),
 #      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
-#      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone).
+#      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone),
+#      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -85,7 +86,7 @@ do_setup() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q || true
   apt-get install -y -q --no-install-recommends git python3 gcc libc6-dev curl ca-certificates xz-utils \
-    clang lld qemu-system-arm qemu-efi-aarch64 qemu-utils procps >/dev/null || die "apt-get install failed"
+    clang lld qemu-system-arm qemu-efi-aarch64 qemu-utils procps zstd binutils >/dev/null || die "apt-get install failed"
   # snapshots (hackios.sh save) need QEMU 8.2+, which saves the ramfb display; bookworm has 7.2,
   # bookworm-backports has trixie's QEMU 10.0 (no speed difference measured, only the snapshots)
   if ! qemu_ok_for_snapshots && grep -q '^VERSION_CODENAME=bookworm' /etc/os-release 2>/dev/null; then
@@ -198,6 +199,15 @@ net_jobs() {
 # keep the clock right (it is behind after a snapshot is resumed): the host's clock, else SNTP
 /redwood/bin/timesync &
 JOBS
+  if [ -d "$DIR/jb/root/var/jb" ]; then
+    # the jailbreak, as HackiOS's rc.jobs.jb has it: the prefix's preparation once per boot (dpkg's
+    # "firmware", Sileo registered with LaunchServices), then fresh package lists for Sileo and apt
+    cat >> "$f" <<'JOBS'
+/var/jb/bin/sh /var/jb/prep.sh
+/redwood/bin/net_test resolve apt.procurs.us
+/var/jb/usr/bin/apt-get update
+JOBS
+  fi
   echo "$f"
 }
 
@@ -215,6 +225,23 @@ do_build() {
   fix_checkout
   log "building HackiOS's loader (xnuloader/loader.efi)"
   bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
+  # the jailbreak, HackiOS's own: tools/mk-jb.sh fetches the Procursus rootless bootstrap, Sileo and
+  # ElleKit into jb/, and their build puts it into the system image (/var/jb at run time)
+  local jb=off system=
+  if [ "${HACKIOS_JB:-1}" != 0 ]; then
+    if [ ! -d jb/root/var/jb ]; then
+      log "jailbreak: HackiOS's tools/mk-jb.sh (Procursus rootless bootstrap, Sileo, ElleKit)"
+      bash tools/mk-jb.sh | tail -2 || die "tools/mk-jb.sh failed (see above)"
+    fi
+    jb=on
+  elif [ -d jb/root ]; then
+    log "jailbreak left out (HACKIOS_JB=0)"; rm -rf jb/root
+  fi
+  # their build remakes system.apfs only when its own inputs change: with the jailbreak added or taken
+  # out it has to be remade too (userland/.ios-tools-jb remembers what the image has)
+  if [ "$(cat userland/.ios-tools-jb 2>/dev/null || echo off)" != "$jb" ]; then
+    system=1; log "the system image is remade ($([ $jb = on ] && echo with || echo without) the jailbreak)"
+  fi
   # ours: keeps iOS's clock right after a snapshot is resumed (timesync/timesync.c in ios-tools)
   local ts
   for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
@@ -227,9 +254,10 @@ do_build() {
   if [ -n "${HACKIOS_TZ:-}" ]; then export HACKIOS_TZ; log "time zone: $HACKIOS_TZ"; fi
   local jobs; jobs=$(net_jobs)
   log "building the images (HackiOS's prebuilt kernel and programs; boot jobs: $(basename "$jobs"))"
-  SKIP="kernel loader boot" PREBUILT=1 RC_JOBS="$jobs" bash common/build.sh qemu-virt
+  SKIP="kernel loader boot" PREBUILT=1 RC_JOBS="$jobs" SYSTEM=$system bash common/build.sh qemu-virt
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
     || die "the images were not built (see above)"
+  echo "$jb" > userland/.ios-tools-jb
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
   log "build done - next: step 4 (boot)"
 }
