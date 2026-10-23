@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.3.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.4.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.3.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.4.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -113,6 +113,14 @@ The **iOS VM Logs** icon opens the full step log on its own screen (Copy / Clear
 - Buttons: **Home**, **Lock**, **Swipe up**, **Vol +**, **Vol −** — HackiOS's virtio keyboard is the
   phone's buttons, not a keyboard, so text is typed on iOS's own on-screen keyboard.
 - **Back** closes the viewer only; iOS keeps running.
+
+### Why the screen is 944×2048, not 1125×2436
+
+iOS renders at the iPhone's native 1125×2436, but QEMU's VNC server (which the viewer reads) drops every
+row past about 2048, so the dock used to be cut off. The loader now presents QEMU a 944×2048 panel at
+iOS's aspect ratio; iOS still renders 1125×2436 and the kernel scales it onto the panel, the same way it
+scales onto the real phone's 1080×2400. So the UI layout is unchanged and the whole screen — status bar
+to dock — fits the viewer.
 
 ## What to expect
 

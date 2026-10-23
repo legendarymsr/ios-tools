@@ -138,6 +138,10 @@ do_setup() {
 #    qemu/run-ios.sh passes QEMU_NET_EXTRA to the user network (the host's clock for timesync)
 #  - xnuloader/loader.c reads back the fw_cfg DMA answer through a plain variable, so -O1 folds the
 #    check and the prebuilt loader.efi always gives up on the 1125x2436 ramfb: black screen
+#  - (not a bug, ours) QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
+#    cut iOS's dock off in the launcher's viewer. The loader makes the ramfb PANEL 944x2048 (<=2048,
+#    iOS's aspect); iOS still renders 1125x2436 and the kernel scales it onto the panel, exactly as it
+#    scales to the real phone's 1080x2400, so the UI is unchanged
 fix_checkout() {
   python3 - "$DIR" <<'PYFIX'
 import pathlib, sys
@@ -170,6 +174,21 @@ fixes = [
   ("qemu/run-ios.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
+  ("xnuloader/loader.c",
+   "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n",
+   "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n"
+   "/* ios-tools: the ramfb PANEL QEMU presents. iOS renders PHONE_WIDTH x PHONE_HEIGHT and the kernel\n"
+   " * scales onto this panel, so the UI is unchanged; <=2048 tall because QEMU VNC here tops out at 2048 (VGA_MAX_HEIGHT). */\n"
+   "#define PANEL_WIDTH     944\n#define PANEL_HEIGHT    2048\n"),
+  ("xnuloader/loader.c",
+   "\tuint64_t fb = 0, bytes = (uint64_t)PHONE_WIDTH * 4 * PHONE_HEIGHT;",
+   "\tuint64_t fb = 0, bytes = (uint64_t)PANEL_WIDTH * 4 * PANEL_HEIGHT;"),
+  ("xnuloader/loader.c",
+   "\tcfg.width = be32(PHONE_WIDTH);\n\tcfg.height = be32(PHONE_HEIGHT);\n\tcfg.stride = be32(PHONE_WIDTH * 4);",
+   "\tcfg.width = be32(PANEL_WIDTH);\n\tcfg.height = be32(PANEL_HEIGHT);\n\tcfg.stride = be32(PANEL_WIDTH * 4);"),
+  ("xnuloader/loader.c",
+   "\tSCREEN.width = PHONE_WIDTH;\n\tSCREEN.height = PHONE_HEIGHT;\n\tSCREEN.stride = PHONE_WIDTH * 4;",
+   "\tSCREEN.width = PANEL_WIDTH;\n\tSCREEN.height = PANEL_HEIGHT;\n\tSCREEN.stride = PANEL_WIDTH * 4;"),
   ("xnuloader/loader.c",
    "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n\tif (dma.control != 0) {\n",
    "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
