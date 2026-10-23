@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: HackiOS only; the viewer fits iOS into the visible screen (Fit shows the sizes)"
+ui_print "- v@VER@: Save iOS snapshot once on the home screen - the next boot resumes it in seconds (run step 2 again first)"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."

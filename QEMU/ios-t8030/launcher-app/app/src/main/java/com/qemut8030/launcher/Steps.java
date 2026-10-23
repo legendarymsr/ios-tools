@@ -27,6 +27,10 @@ public final class Steps {
     public static final String POWER_OFF =
         SYNC + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh stop'";
 
+    /** "Save iOS snapshot" button: works while the Boot step is still running. */
+    public static final String SAVE =
+        SYNC + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh save'";
+
     public static final Step[] STEPS = new Step[] {
         new Step("1. Install & update Debian (chroot)",
             "ROOTFS=/data/local/debian sh {P}/setup-debian-chroot.sh"),
@@ -41,6 +45,8 @@ public final class Steps {
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh run'"),
         new Step("5. Status",
             SYNC + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh status'"),
+        new Step("6. Forget the snapshot (next boot starts afresh)",
+            SYNC + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh forget'"),
     };
     private Steps() {}
 }

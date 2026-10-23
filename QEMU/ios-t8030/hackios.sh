@@ -13,6 +13,9 @@
 #   hackios.sh build    download iOS 16.5 (7.4 GB, resumable), build HackiOS's loader and the
 #                       images root.apfs + system.apfs (HackiOS's prebuilt kernel and programs)
 #   hackios.sh run      boot it: QEMU virt, display on VNC 127.0.0.1:5900, network on (QEMU_NET=1)
+#   hackios.sh save     save the running iOS to a snapshot (once it is on the home screen): the next
+#                       run resumes it in seconds instead of booting for many minutes (QEMU 8.2+)
+#   hackios.sh forget   delete the snapshot, so the next run boots afresh
 #   hackios.sh stop     stop that QEMU
 #   hackios.sh status   what is installed / built / running
 #
@@ -21,7 +24,8 @@
 #      HACKIOS_SMP (vCPUs, default 4), HACKIOS_RAM_GB (guest RAM, default 7: HackiOS's layout
 #      puts the 2.5 GB system image high in RAM; the guest RAM is a file mapping, so the phone
 #      itself needs about 2.5-3 GB free), HACKIOS_NET=0 (no network; takes effect at the next build),
-#      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below).
+#      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below),
+#      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 KERNEL_URL=https://github.com/oosexgang/hackios-xnu-kernel.git
@@ -80,6 +84,16 @@ do_setup() {
   apt-get update -q || true
   apt-get install -y -q --no-install-recommends git python3 gcc libc6-dev curl ca-certificates xz-utils \
     clang lld qemu-system-arm qemu-efi-aarch64 qemu-utils procps >/dev/null || die "apt-get install failed"
+  # snapshots (hackios.sh save) need QEMU 8.2+, which saves the ramfb display; bookworm has 7.2,
+  # bookworm-backports has trixie's QEMU 10.0 (no speed difference measured, only the snapshots)
+  if ! qemu_ok_for_snapshots && grep -q '^VERSION_CODENAME=bookworm' /etc/os-release 2>/dev/null; then
+    log "QEMU $(qemu-system-aarch64 --version | head -1 | awk '{print $4}') cannot save snapshots: installing QEMU 10 from bookworm-backports"
+    grep -rqs 'bookworm-backports' /etc/apt/sources.list /etc/apt/sources.list.d/ \
+      || echo 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/bookworm-backports.list
+    apt-get update -q >/dev/null || true
+    apt-get install -y -q --no-install-recommends -t bookworm-backports qemu-system-arm qemu-utils >/dev/null \
+      || log "WARNING: QEMU from bookworm-backports did not install; HackiOS runs, but without snapshots"
+  fi
   qemu-system-aarch64 -cpu help 2>/dev/null | grep -qw cortex-a76 \
     || die "this QEMU ($(qemu-system-aarch64 --version | head -1)) has no cortex-a76 CPU; HackiOS needs QEMU 7.1+"
   [ -f "$EFI_CODE" ] && [ -f "$EFI_VARS" ] || die "UEFI firmware missing ($EFI_CODE)"
@@ -113,6 +127,9 @@ do_setup() {
 #  - userland/mkjobs.py reuses the loop variable `name` for RWA_PACKED16, so the ~400 on-demand iOS
 #    jobs (REST=1: configd, mDNSResponder, trustd, nsurlsessiond, ...) all overwrite one file named
 #    RWA_PACKED16 and none of them can start: no DHCP, no DNS, Safari "not connected to the Internet"
+#  - (not bugs: two switches for snapshots, default unchanged) qemu/run.sh mounts the ESP read-write
+#    and qemu/run-ios.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
+#    QEMU_ESP_RW= QEMU_ESP_RO=1 mounts it read-only and QEMU_SOUND=0 leaves the sound device out
 #  - xnuloader/loader.c reads back the fw_cfg DMA answer through a plain variable, so -O1 folds the
 #    check and the prebuilt loader.efi always gives up on the 1125x2436 ramfb: black screen
 fix_checkout() {
@@ -131,6 +148,12 @@ fixes = [
    "                job.setdefault('EnvironmentVariables', {})[name] = os.environ[name]\n        if label in oslog:",
    "        for var in ('RWA_PACKED16',):\n            if os.environ.get(var):\n"
    "                job.setdefault('EnvironmentVariables', {})[var] = os.environ[var]\n        if label in oslog:"),
+  ("qemu/run.sh",
+   "-drive file=fat:rw:esp,format=raw,if=virtio ",
+   "-drive file=fat:${QEMU_ESP_RW-rw:}esp,format=raw,if=virtio${QEMU_ESP_RO:+,readonly=on} "),
+  ("qemu/run-ios.sh",
+   "if qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then",
+   "if [ \"${QEMU_SOUND:-1}\" != 0 ] && qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then"),
   ("xnuloader/loader.c",
    "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n\tif (dma.control != 0) {\n",
    "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
@@ -184,6 +207,60 @@ do_build() {
   log "build done - next: step 4 (boot)"
 }
 
+# ---- snapshots ------------------------------------------------------------------------------------
+# A snapshot is QEMU's saved VM state (a migration stream in a file): RAM, CPUs and devices. Resuming it
+# needs the same QEMU, devices, memory and images, so it is kept with a key of all of those and only
+# used when the key still matches. QEMU 8.2+ is needed: older ones do not save the ramfb display.
+SNAP_PORT=4445
+snap_file() { echo "$DIR/qemu/hackios.snapshot"; }
+qemu_ok_for_snapshots() {
+  local v; v=$(qemu-system-aarch64 --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  [ -n "$v" ] && [ "$(printf '%s\n8.2\n' "$v" | sort -V | head -1)" = 8.2 ]
+}
+snap_key() {
+  ( cd "$DIR" && qemu-system-aarch64 --version | head -1
+    echo "smp=${HACKIOS_SMP:-4} ram=${HACKIOS_RAM_GB:-7} net=${HACKIOS_NET:-1} cmdline=${HACKIOS_CMDLINE:-}"
+    stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi prebuilt/mach.development.bcm2837 2>/dev/null
+  ) | sha256sum | cut -d' ' -f1
+}
+# qmp COMMAND-JSON...: send QMP commands to the running QEMU, print each answer; `wait-migration`
+# polls query-migrate until it ends and prints its final status
+qmp() {
+  python3 - "$SNAP_PORT" "$@" <<'PYQMP'
+import json, socket, sys, time
+port, cmds = int(sys.argv[1]), sys.argv[2:]
+deadline = time.time() + 120
+while True:
+    try:
+        s = socket.create_connection(("127.0.0.1", port), timeout=5); break
+    except OSError:
+        if time.time() > deadline: print("no-qmp"); sys.exit(1)
+        time.sleep(1)
+f = s.makefile("rw")
+def call(cmd):
+    f.write(json.dumps(cmd) + "\n"); f.flush()
+    while True:
+        r = json.loads(f.readline())
+        if "return" in r or "error" in r: return r
+json.loads(f.readline()); call({"execute": "qmp_capabilities"})
+for c in cmds:
+    if c == "wait-migration":
+        last = None
+        while True:
+            st = call({"execute": "query-migrate"}).get("return", {})
+            status = st.get("status", "none")
+            mb = st.get("ram", {}).get("transferred", 0) >> 20
+            if status != last or int(time.time()) % 15 == 0:
+                print(f"migration: {status}, {mb} MB", flush=True); last = status
+            if status in ("completed", "failed", "cancelled"):
+                if status == "failed": print("error:", st.get("error-desc", "?"))
+                print("final:", status); break
+            time.sleep(1)
+    else:
+        print(json.dumps(call(json.loads(c))))
+PYQMP
+}
+
 do_run() {
   credit
   cd "$DIR" 2>/dev/null || die "not set up yet - run step 2 first"
@@ -194,15 +271,73 @@ do_run() {
   if [ "${avail:-0}" -lt 3000 ]; then
     log "WARNING: only ${avail} MB of memory available; HackiOS wants about 2.5-3 GB. Close other apps if Android kills it."
   fi
+  fix_checkout >/dev/null
   local secs="${HACKIOS_SECS:-7200}"
   local net=1; [ "${HACKIOS_NET:-1}" = 0 ] && net=0
-  log "booting iOS 16.5 under QEMU virt (TCG, ${HACKIOS_SMP:-4} vCPUs, ${HACKIOS_RAM_GB:-7} GB guest RAM, network=$net, session ${secs} s)"
-  log "display: VNC 127.0.0.1:5900 - the lock screen takes several minutes on a phone"
+  local extra=() snap; snap=$(snap_file)
+  if qemu_ok_for_snapshots; then
+    # the same devices whether or not this run is saved later: snapshots need them alike
+    export QEMU_ESP_RW= QEMU_ESP_RO=1 QEMU_SOUND=0
+    if [ "${HACKIOS_SNAPSHOT:-1}" != 0 ] && [ -f "$snap" ] && [ "$(cat "$snap.key" 2>/dev/null)" = "$(snap_key)" ]; then
+      log "resuming the saved iOS (snapshot of $(date -r "$snap" '+%Y-%m-%d %H:%M'), $(du -h "$snap" | cut -f1)) instead of booting"
+      extra=(-incoming defer)
+      # the snapshot was taken with the VM paused, so it loads paused: cont starts it
+      ( out=$(qmp "{\"execute\": \"migrate-incoming\", \"arguments\": {\"uri\": \"file:$snap\"}}" wait-migration '{"execute": "cont"}' 2>&1)
+        if echo "$out" | grep -q "final: completed"; then
+          log "snapshot loaded: iOS is running (its clock is behind by the time it was off)"
+        else
+          log "the snapshot could not be loaded: $(echo "$out" | grep -E 'error|final' | head -2 | tr '\n' ' ')"
+          touch "$DIR/qemu/.snapshot-failed"; qmp '{"execute": "quit"}' >/dev/null 2>&1
+        fi ) &
+    elif [ -f "$snap" ] && [ "${HACKIOS_SNAPSHOT:-1}" != 0 ]; then
+      log "the saved snapshot is from other images or settings: booting afresh (save again once on the home screen)"
+    fi
+  else
+    if [ -f "$snap" ]; then log "snapshots need QEMU 8.2 or newer (this is $(qemu-system-aarch64 --version | head -1 | awk '{print $4}')): booting afresh"; fi
+  fi
+  if [ ${#extra[@]} = 0 ]; then
+    log "booting iOS 16.5 under QEMU virt (TCG, ${HACKIOS_SMP:-4} vCPUs, ${HACKIOS_RAM_GB:-7} GB guest RAM, network=$net, session ${secs} s)"
+    log "display: VNC 127.0.0.1:5900 - the lock screen takes several minutes on a phone"
+    if qemu_ok_for_snapshots; then log "tip: once iOS is on the home screen, tap \"Save iOS snapshot\" so the next boot takes seconds"; fi
+  fi
   log "touch: the pointer with the button held is a finger; swipe up from the bottom edge = home/unlock, from the left edge = back"
+  rm -f "$DIR/qemu/.snapshot-failed"
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} ${HACKIOS_CMDLINE:-}" \
-    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:0
+    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:0 "${extra[@]}" || true
+  wait
+  if [ -f "$DIR/qemu/.snapshot-failed" ]; then
+    rm -f "$DIR/qemu/.snapshot-failed" "$snap" "$snap.key"
+    log "snapshot deleted; booting afresh"
+    HACKIOS_SNAPSHOT=0 do_run
+  fi
+}
+
+do_save() {
+  credit
+  [ -n "$(qemu_pids)" ] || die "HackiOS is not running - boot it (step 4) and wait for the home screen first"
+  qemu_ok_for_snapshots || die "snapshots need QEMU 8.2 or newer; this is $(qemu-system-aarch64 --version | head -1 | awk '{print $4}')"
+  ps -o args= -p "$(qemu_pids | head -1)" | grep -q 'fat:esp' \
+    || die "this QEMU was started before snapshot support: Power off, boot again (step 4), then save"
+  local snap; snap=$(snap_file)
+  log "saving iOS to $snap (iOS pauses for this; a few GB)"
+  local t0; t0=$(date +%s)
+  rm -f "$snap.part"
+  local out; out=$(qmp '{"execute": "stop"}' \
+    "{\"execute\": \"migrate\", \"arguments\": {\"uri\": \"file:$snap.part\"}}" wait-migration '{"execute": "cont"}' 2>&1)
+  if echo "$out" | grep -q "final: completed"; then
+    mv -f "$snap.part" "$snap" && snap_key > "$snap.key"
+    log "saved in $(( $(date +%s) - t0 )) s, $(du -h "$snap" | cut -f1); iOS keeps running. The next boot (step 4) resumes from here."
+  else
+    rm -f "$snap.part"
+    die "saving failed: $(echo "$out" | grep -E 'error|final|desc' | head -3 | tr '\n' ' ')"
+  fi
+}
+
+do_forget() {
+  rm -f "$(snap_file)" "$(snap_file).key" "$(snap_file).part"
+  log "snapshot deleted: the next boot starts afresh"
 }
 
 do_stop() {
@@ -218,6 +353,7 @@ do_status() {
   [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (step 2)"
   [ -f "$DIR/ios165/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
   [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (step 3)"
+  [ -f "$(snap_file)" ] && log "snapshot: saved $(date -r "$(snap_file)" '+%Y-%m-%d %H:%M'), $(du -h "$(snap_file)" | cut -f1)" || log "snapshot: none"
   [ -n "$(qemu_pids)" ] && log "running (pid $(qemu_pids | tr '\n' ' '))" || log "not running"
 }
 
@@ -225,7 +361,9 @@ case "${1:-status}" in
   setup) do_setup ;;
   build) do_build ;;
   run) do_run ;;
+  save) do_save ;;
+  forget) do_forget ;;
   stop) do_stop ;;
   status) do_status ;;
-  *) die "usage: hackios.sh setup|build|run|stop|status" ;;
+  *) die "usage: hackios.sh setup|build|run|save|forget|stop|status" ;;
 esac

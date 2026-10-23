@@ -41,6 +41,8 @@ public class MainActivity extends AppCompatActivity {
     private MaterialButton vncButton;
     private MaterialButton powerButton;
     private volatile boolean poweringOff = false;
+    private MaterialButton saveButton;
+    private volatile boolean saving = false;
     private volatile boolean vncWatch = false;
     private volatile boolean resumed = false;
     static final String VNC_HOST = "127.0.0.1";
@@ -76,6 +78,16 @@ public class MainActivity extends AppCompatActivity {
         powerButton.setLayoutParams(plp);
         powerButton.setOnClickListener(v -> powerOff());
         buttons.addView(powerButton);
+
+        saveButton = new MaterialButton(this);
+        saveButton.setText("Save iOS snapshot (next boot in seconds)");
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        slp.topMargin = 8;
+        saveButton.setLayoutParams(slp);
+        saveButton.setOnClickListener(v -> saveSnapshot());
+        buttons.addView(saveButton);
 
         for (final Steps.Step s : Steps.STEPS) {
             MaterialButton btn = new MaterialButton(this);
@@ -224,7 +236,7 @@ public class MainActivity extends AppCompatActivity {
     private void setButtonsEnabled(boolean en) {
         for (int i = 0; i < buttons.getChildCount(); i++) {
             View b = buttons.getChildAt(i);
-            if (b != vncButton && b != powerButton) b.setEnabled(en);   // viewer stays usable while a VM runs
+            if (b != vncButton && b != powerButton && b != saveButton) b.setEnabled(en);   // viewer stays usable while a VM runs
         }
     }
 
@@ -243,6 +255,26 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("[power off exit " + code + "]");
                     poweringOff = false;
                     powerButton.setEnabled(true);
+                });
+            }
+        });
+    }
+
+    /** Also alongside the busy Boot step: saves the running iOS so the next boot resumes it. */
+    private void saveSnapshot() {
+        if (payload == null) { appendLog("Save: waiting for root/payload - tap again in a moment."); ensurePayloadThen(null); return; }
+        if (saving) { appendLog("Saving already in progress…"); return; }
+        saving = true;
+        saveButton.setEnabled(false);
+        String cmd = Steps.SAVE.replace("{P}", payload.getAbsolutePath());
+        appendLog("\n$ " + cmd);
+        ScriptRunner.run(cmd, new ScriptRunner.Listener() {
+            @Override public void onLine(String line) { main.post(() -> appendLog(line)); }
+            @Override public void onFinished(int code) {
+                main.post(() -> {
+                    appendLog("[save exit " + code + "]");
+                    saving = false;
+                    saveButton.setEnabled(true);
                 });
             }
         });
