@@ -25,9 +25,11 @@
 #      puts the 2.5 GB system image high in RAM; the guest RAM is a file mapping, so the phone
 #      itself needs about 2.5-3 GB free), HACKIOS_NET=0 (no network; takes effect at the next build),
 #      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below),
-#      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved).
+#      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
+#      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
+HERE=$(cd "$(dirname "$0")" && pwd)
 KERNEL_URL=https://github.com/oosexgang/hackios-xnu-kernel.git
 USERLAND_URL=https://github.com/oosexgang/hackios-xnu-userland.git
 KERNEL_PIN=8e61187098f2c26c5daee8f9f72b6416aa64b9ab     # 2026-10-22 "Add LICENSE"
@@ -130,6 +132,9 @@ do_setup() {
 #  - (not bugs: two switches for snapshots, default unchanged) qemu/run.sh mounts the ESP read-write
 #    and qemu/run-ios.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
 #    QEMU_ESP_RW= QEMU_ESP_RO=1 mounts it read-only and QEMU_SOUND=0 leaves the sound device out
+#  - (not bugs, ours) userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none
+#    (the launcher passes Android's), copies obj/timesync into the image when it is there, and
+#    qemu/run-ios.sh passes QEMU_NET_EXTRA to the user network (the host's clock for timesync)
 #  - xnuloader/loader.c reads back the fw_cfg DMA answer through a plain variable, so -O1 folds the
 #    check and the prebuilt loader.efi always gives up on the 1125x2436 ramfb: black screen
 fix_checkout() {
@@ -154,6 +159,16 @@ fixes = [
   ("qemu/run-ios.sh",
    "if qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then",
    "if [ \"${QEMU_SOUND:-1}\" != 0 ] && qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then"),
+  ("userland/build.sh",
+   "zone=${zone:-UTC}",
+   "zone=${zone:-${HACKIOS_TZ:-UTC}}"),
+  ("userland/build.sh",
+   "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n",
+   "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n"
+   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n"),
+  ("qemu/run-ios.sh",
+   "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
+   "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
   ("xnuloader/loader.c",
    "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n\tif (dma.control != 0) {\n",
    "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
@@ -180,6 +195,8 @@ net_jobs() {
   cat > "$f" <<'JOBS'
 # written by ios-tools hackios.sh: DHCP on en0 (QEMU's network), wait for the address, show it
 /redwood/bin/net_test dhcp en0 waitaddr en0 180 show
+# keep the clock right (it is behind after a snapshot is resumed): the host's clock, else SNTP
+/redwood/bin/timesync &
 JOBS
   echo "$f"
 }
@@ -198,6 +215,16 @@ do_build() {
   fix_checkout
   log "building HackiOS's loader (xnuloader/loader.efi)"
   bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
+  # ours: keeps iOS's clock right after a snapshot is resumed (timesync/timesync.c in ios-tools)
+  local ts
+  for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
+    if [ -f "$ts" ]; then cp -f "$ts" userland/obj/timesync; break; fi
+  done
+  # iOS's time zone: Android's (the launcher passes it), checked against the zones iOS has
+  if [ -n "${HACKIOS_TZ:-}" ] && [ ! -e "ios165/rootfs/usr/share/zoneinfo.default/$HACKIOS_TZ" ]; then
+    log "time zone $HACKIOS_TZ is not one iOS has: UTC"; unset HACKIOS_TZ
+  fi
+  if [ -n "${HACKIOS_TZ:-}" ]; then export HACKIOS_TZ; log "time zone: $HACKIOS_TZ"; fi
   local jobs; jobs=$(net_jobs)
   log "building the images (HackiOS's prebuilt kernel and programs; boot jobs: $(basename "$jobs"))"
   SKIP="kernel loader boot" PREBUILT=1 RC_JOBS="$jobs" bash common/build.sh qemu-virt
@@ -302,6 +329,8 @@ do_run() {
   fi
   log "touch: the pointer with the button held is a finger; swipe up from the bottom edge = home/unlock, from the left edge = back"
   rm -f "$DIR/qemu/.snapshot-failed"
+  # the host's clock for timesync in iOS: a connection to 10.0.2.100:37 gets `date +%s.%N`
+  export QEMU_NET_EXTRA='guestfwd=tcp:10.0.2.100:37-cmd:date +%s.%N'
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} ${HACKIOS_CMDLINE:-}" \

@@ -26,7 +26,7 @@ Two QEMU deliverables for a rooted Android phone, each packaged as a
   Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware KVM. Needs a
   custom kernel (`CONFIG_KVM=y`) exposing `/dev/kvm`. Includes a prebuilt
   `kvmcheck` aarch64 binary.
-- **`QEMU/ios-t8030/`** — module `qemu-t8030-launcher-v2.1.0.zip`, app
+- **`QEMU/ios-t8030/`** — module `qemu-t8030-launcher-v2.2.0.zip`, app
   "iOS VM (HackiOS)". iOS 16.5 in QEMU's `virt` machine with
   [HackiOS](https://github.com/oosexgang) by OOSEX GANG, in a Debian chroot, with network.
   TCG only (slow, no GPU). HackiOS's code and iOS 16.5 (from Apple's CDN) are fetched on the

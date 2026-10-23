@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: Save iOS snapshot once on the home screen - the next boot resumes it in seconds (run step 2 again first)"
+ui_print "- v@VER@: iOS keeps its clock right after a snapshot and uses your time zone (run step 3 again, then save a new snapshot)"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -58,7 +58,7 @@ CUS
 sed -i "s/@VER@/${VER}/" "$STAGE/customize.sh"
 cp "$APK" "$STAGE/app/qemu-t8030-launcher.apk"
 # payload: the chroot installer and hackios.sh
-PAYLOAD=(hackios.sh setup-debian-chroot.sh xz-arm64 LICENSE-xz)
+PAYLOAD=(hackios.sh timesync/timesync-arm64 setup-debian-chroot.sh xz-arm64 LICENSE-xz)
 for f in "${PAYLOAD[@]}"; do
   cp -a "$HERE/$f" "$STAGE/payload/"
 done

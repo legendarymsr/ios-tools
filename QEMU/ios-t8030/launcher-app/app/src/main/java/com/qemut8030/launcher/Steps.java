@@ -20,7 +20,7 @@ public final class Steps {
 
     // The chroot runs the copy of hackios.sh in /root: refresh it from the app on every step.
     static final String SYNC =
-        "mkdir -p /data/local/debian/root && cp -f \"{P}\"/hackios.sh /data/local/debian/root/ "
+        "mkdir -p /data/local/debian/root && cp -f \"{P}\"/hackios.sh \"{P}\"/timesync-arm64 /data/local/debian/root/ "
       + "&& chmod 0755 /data/local/debian/root/hackios.sh; ";
 
     /** "Power off VM" button. */
@@ -39,7 +39,8 @@ public final class Steps {
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh setup'"),
         new Step("3. Download iOS 16.5 + build images (long)",
             SYNC
-          + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh build'"),
+          // iOS gets Android's time zone (expanded here, on the Android side)
+          + DETACH + "sh /data/local/enter-debian.sh \"HACKIOS_TZ=$(getprop persist.sys.timezone) bash /root/hackios.sh build\""),
         new Step("4. Boot iOS 16.5 (VNC, network)",
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh run'"),

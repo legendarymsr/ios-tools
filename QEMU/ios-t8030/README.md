@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.1.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.2.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.1.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.2.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -73,7 +73,10 @@ screen, touch and network working, 14 s after starting, against about 420 s for 
 
 - The snapshot is only used while it still fits: same images, QEMU, vCPUs, RAM and boot settings. After a
   rebuild (step 3) it is ignored until you save again; **Forget the snapshot** deletes it.
-- iOS's clock is behind after a resume by the time the VM was off.
+- iOS's clock: `timesync` (ours, [`timesync/timesync.c`](timesync/timesync.c), started from the boot job
+  list) sets it from the phone's clock every 30 s, so after a resume it is right again within about half a
+  minute (QEMU's user network answers 10.0.2.100:37 with the host's `date`; SNTP servers as a fallback).
+  Step 3 gives iOS Android's time zone.
 - Needs QEMU 8.2 or newer (older ones cannot save the display). Step 2 installs QEMU 10 from
   bookworm-backports when the chroot is Debian bookworm (bookworm itself has 7.2).
 - To make snapshots possible, QEMU runs with HackiOS's EFI disk read-only and without the virtio sound
@@ -104,5 +107,7 @@ The **iOS VM Logs** icon opens the full step log on its own screen (Copy / Clear
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
   `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`).
+- `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
+  iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
