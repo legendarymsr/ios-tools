@@ -47,16 +47,15 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         port = getIntent().getIntExtra(EXTRA_PORT, 5900);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
 
-        FrameLayout root = new FrameLayout(this);
+        // The buttons get a row of their own above the picture, so the whole remote screen fits
+        // below them instead of being covered at the top (iOS's status bar was under them).
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
-        view = new VncView(this);
-        root.addView(view, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setBackgroundColor(0xB0000000);
-        bar.setPadding(12, 8, 12, 8);
+        bar.setPadding(12, 4, 12, 4);
         bar.addView(barButton("Keyboard", v -> toggleKeyboard()));
         bar.addView(barButton("Esc", v -> view.tap(Keysyms.ESCAPE)));
         bar.addView(barButton("Ctrl+C", v -> combo(Keysyms.CONTROL, 'c')));
@@ -64,24 +63,50 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         // iPhone 11 has no home button: both are swipes from the bottom edge.
         bar.addView(barButton("Swipe up", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.30f, 450)));
         bar.addView(barButton("Home", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.50f, 400)));
-        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
         android.widget.HorizontalScrollView barScroll = new android.widget.HorizontalScrollView(this);
         barScroll.setHorizontalScrollBarEnabled(false);
         barScroll.addView(bar);
-        root.addView(barScroll, blp);
+        root.addView(barScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        FrameLayout screen = new FrameLayout(this);
+        view = new VncView(this);
+        screen.addView(view, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(0xC0000000);
         status.setPadding(24, 24, 24, 24);
         status.setText("Connecting to " + host + ":" + port + " …");
-        root.addView(status, new FrameLayout.LayoutParams(
+        screen.addView(status, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        root.addView(screen, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         setContentView(root);
+        hideSystemBars();
         setTitle(title != null ? title : "VNC " + host + ":" + port);
         connect();
+    }
+
+    /** Android's status and navigation bars off (a swipe from the edge shows them for a moment). */
+    @SuppressWarnings("deprecation")
+    private void hideSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.hide(android.view.WindowInsets.Type.systemBars());
+                c.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
     }
 
     private Button barButton(String label, View.OnClickListener l) {
