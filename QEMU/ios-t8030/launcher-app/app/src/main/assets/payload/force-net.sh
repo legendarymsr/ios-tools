@@ -31,16 +31,17 @@ echo "[*] iOS VM pid $IOS"
 echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
 
 # iOS only asks for an address when told to, and the USB ethernet is not
-# always en0. Once the root shell is up, run DHCP on en0-en9 and check every
-# 30 s; the first interface with a 10.0.2.x lease wins and the kick stops.
-# Runs as long as the VM does.
+# always en0. Once the root shell is up, ask iOS for its interfaces
+# (ipconfig getiflist, else en0-en9), run DHCP on the en* ones and check their
+# addresses; the first with a 10.0.2.x lease wins and the kick stops. Runs as
+# long as the VM does.
 #
-# Long lines sent in one burst lose characters on the guest serial port and
-# leave bash stuck at its ">" continuation prompt, so every command is
-# preceded by Ctrl-C (drops any half-typed line) and typed 8 bytes at a time.
+# Long lines sent in one burst lose characters on the guest serial port, so
+# commands are typed 8 bytes at a time. Each ipconfig call takes seconds under
+# TCG, so every command ends with a marker (computed by the guest, so the echo
+# of the typed line can't match it) and the next one is only sent once that
+# marker shows up. Ctrl-C is sent once at the start and when a command hangs.
 type_cmd() {
-  printf '\003' >&3
-  sleep 1
   local s="$1"
   while [ -n "$s" ]; do
     printf '%s' "${s:0:8}" >&3
@@ -49,24 +50,53 @@ type_cmd() {
   done
   printf '\n' >&3
 }
-IFS_EN='en0 en1 en2 en3 en4 en5 en6 en7 en8 en9'
+SEQ=0
+run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
+  SEQ=$((SEQ + 1))
+  type_cmd "$1; echo KICKDONE\$((7000+$SEQ))"
+  local t=0
+  until grep -a -q "KICKDONE$((7000 + SEQ))" "$SERLOG" 2>/dev/null; do
+    kill -0 "$IOS" 2>/dev/null || return 1
+    sleep 1
+    t=$((t + 1))
+    if [ "$t" -ge "$2" ]; then
+      printf '\003' >&3
+      sleep 1
+      return 1
+    fi
+  done
+}
 (
   sleep 120
-  n=0
+  printf '\003' >&3   # drop anything half-typed on the console
+  sleep 1
+  START=$SECONDS; NEXT_NOTE=300; n=0; last_list=""
   while kill -0 "$IOS" 2>/dev/null; do
-    if [ $((n % 4)) = 0 ]; then
-      type_cmd "for i in $IFS_EN; do /usr/sbin/ipconfig set \$i DHCP; done 2>/dev/null"
+    run_guest 'L=$(/usr/sbin/ipconfig getiflist 2>/dev/null); [ -n "$L" ] || L="en0 en1 en2 en3 en4 en5 en6 en7 en8 en9"; echo IFLIST=$L' 60
+    LIST=$(grep -a -o 'IFLIST=[a-z].*' "$SERLOG" 2>/dev/null | tail -1 | tr -d '\r')
+    LIST=${LIST#IFLIST=}
+    force=0
+    if [ -n "$LIST" ] && [ "$LIST" != "$last_list" ]; then
+      echo "[*] iOS network interfaces: $LIST"
+      last_list=$LIST
+      force=1
     fi
-    sleep 20
-    type_cmd "for i in $IFS_EN; do echo NETIF=\$i:\$(/usr/sbin/ipconfig getifaddr \$i); done 2>/dev/null"
-    sleep 5
+    if [ "$force" = 1 ] || [ $((n % 4)) = 0 ]; then
+      run_guest 'for i in $L; do case $i in en*) /usr/sbin/ipconfig set $i DHCP;; esac; done 2>/dev/null' 180
+      sleep 15
+    fi
+    run_guest 'for i in $L; do echo NETIF=$i:$(/usr/sbin/ipconfig getifaddr $i); done 2>/dev/null' 180
     HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | head -1 | cut -d= -f2)
     if [ -n "$HIT" ]; then
       echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} (gateway 10.0.2.2, DNS 10.0.2.3) - DHCP kick done"
       exit 0
     fi
     n=$((n + 1))
-    [ $((n % 10)) = 0 ] && echo "[*] DHCP kick: no 10.0.2.x lease on en0-en9 yet ($((n / 2)) min), still trying"
+    if [ $((SECONDS - START)) -ge "$NEXT_NOTE" ]; then
+      echo "[*] DHCP kick: no 10.0.2.x lease yet ($(( (SECONDS - START) / 60 )) min), still trying"
+      NEXT_NOTE=$((NEXT_NOTE + 300))
+    fi
+    sleep 10
   done
 ) &
 KICK=$!
