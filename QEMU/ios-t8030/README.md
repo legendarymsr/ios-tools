@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.6.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.6.1.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.6.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.6.1.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -136,16 +136,18 @@ Nothing makes this fast — a Snapdragon Galaxy can't give QEMU hardware virtual
 instruction is translated in software (TCG). What helps:
 
 - **Snapshots** (above) make *starting* instant after the first boot.
-- **Render resolution.** iOS draws every pixel on the CPU, so the resolution is most of the cost. By
-  default the UI is rendered at 2× (750×1624) and the kernel upscales it to the panel — about 2.25×
-  fewer pixels per frame and roughly 3× the frame rate, a little softer (barely visible). `HACKIOS_FBSCALE=3`
-  renders at full native 3× (sharper, slower).
+- **Render resolution** (`HACKIOS_FBSCALE=2`) draws the UI at 2× (750×1624) instead of native 3× and
+  upscales it — fewer pixels for the CPU per frame. A controlled A/B test (same animation, only the scale
+  changed) showed **no frame-rate difference** — both ~10 fps, because the limit is the final scaling onto
+  the panel, not the UI rendering. So the default is native 3×; `HACKIOS_FBSCALE=2` is there if you want
+  lower CPU load (and a slightly softer image), but don't expect it to feel faster.
 - A newer QEMU is **not** faster: QEMU 8.2 and 10.0 both took 421–423 s to the home screen in the same test.
+- The honest summary: snapshots fix *startup*; nothing available here makes *running* it much faster.
 
 ## What to expect
 
-- Slow: QEMU has no KVM here, so every instruction is translated (TCG). The UI renders at 2× for speed
-  (see above) and snapshots make starting fast, but running it is still unhurried.
+- Slow: QEMU has no KVM here, so every instruction is translated (TCG). Snapshots make *starting* fast;
+  *running* it stays unhurried (about 10 fps) and nothing available here changes that much.
 - The home/lock background is black (the stock white wallpaper needs a GPU; see above). Widgets, blur and
   photo wallpapers still need the GPU and are blank. Apps (Safari, Settings, Notes …) draw normally.
 - Network: Safari and apps reach the internet through QEMU's user network (iOS gets 10.0.2.15).
