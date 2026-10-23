@@ -28,7 +28,8 @@
 #      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
 #      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone),
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
-#      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build).
+#      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
+#      HACKIOS_FBSCALE=3 (full native sharpness, slower; default 2 renders at 2x and upscales, ~3x faster).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -306,6 +307,15 @@ PYWALL
   log "build done - next: step 4 (boot)"
 }
 
+# Rendering resolution (ios-tools): iOS draws every pixel on the CPU, so with no GPU under QEMU the
+# render resolution is most of the cost. fbscale=2 draws the UI at 2 pixels a point (750x1624) instead
+# of 3 (1125x2436) and the kernel enlarges it to the panel -- about 2.25x fewer pixels a frame, ~3x the
+# frame rate, a little softer. Default 2 (speed). HACKIOS_FBSCALE=3 or =0 is full native sharpness.
+fbscale_arg() {
+  local fb="${HACKIOS_FBSCALE:-2}"
+  case "$fb" in 0|3) ;; *) printf 'fbscale=%s' "$fb" ;; esac
+}
+
 # ---- snapshots ------------------------------------------------------------------------------------
 # A snapshot is QEMU's saved VM state (a migration stream in a file): RAM, CPUs and devices. Resuming it
 # needs the same QEMU, devices, memory and images, so it is kept with a key of all of those and only
@@ -318,7 +328,7 @@ qemu_ok_for_snapshots() {
 }
 snap_key() {
   ( cd "$DIR" && qemu-system-aarch64 --version | head -1
-    echo "smp=${HACKIOS_SMP:-4} ram=${HACKIOS_RAM_GB:-7} net=${HACKIOS_NET:-1} cmdline=${HACKIOS_CMDLINE:-}"
+    echo "smp=${HACKIOS_SMP:-4} ram=${HACKIOS_RAM_GB:-7} net=${HACKIOS_NET:-1} fbscale=${HACKIOS_FBSCALE:-2} cmdline=${HACKIOS_CMDLINE:-}"
     stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi prebuilt/mach.development.bcm2837 2>/dev/null
   ) | sha256sum | cut -d' ' -f1
 }
@@ -397,6 +407,7 @@ do_run() {
   if [ ${#extra[@]} = 0 ]; then
     log "booting iOS 16.5 under QEMU virt (TCG, ${HACKIOS_SMP:-4} vCPUs, ${HACKIOS_RAM_GB:-7} GB guest RAM, network=$net, session ${secs} s)"
     log "display: VNC 127.0.0.1:5900 - the lock screen takes several minutes on a phone"
+    [ "${HACKIOS_FBSCALE:-2}" != 3 ] && [ "${HACKIOS_FBSCALE:-2}" != 0 ] && log "rendering at 2x for speed (HACKIOS_FBSCALE=3 for full sharpness)"
     if qemu_ok_for_snapshots; then log "tip: once iOS is on the home screen, tap \"Save iOS snapshot\" so the next boot takes seconds"; fi
   fi
   log "touch: the pointer with the button held is a finger; swipe up from the bottom edge = home/unlock, from the left edge = back"
@@ -405,7 +416,7 @@ do_run() {
   export QEMU_NET_EXTRA='guestfwd=tcp:10.0.2.100:37-cmd:date +%s.%N'
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
-    CMDLINE="cpus=${HACKIOS_SMP:-4} ${HACKIOS_CMDLINE:-}" \
+    CMDLINE="cpus=${HACKIOS_SMP:-4} $(fbscale_arg) ${HACKIOS_CMDLINE:-}" \
     bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:0 "${extra[@]}" || true
   wait
   if [ -f "$DIR/qemu/.snapshot-failed" ]; then

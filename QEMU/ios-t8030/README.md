@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.5.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.6.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.5.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.6.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -130,11 +130,22 @@ which the software renderer draws — a black background with a thin diagonal st
 keeps iOS's stock default. A photo cannot be used: every wallpaper type this iOS ships (Bokeh, the
 stripes, the layered animation) is procedural, and a raster image needs the GPU.
 
+### Speed
+
+Nothing makes this fast — a Snapdragon Galaxy can't give QEMU hardware virtualization (KVM), so every CPU
+instruction is translated in software (TCG). What helps:
+
+- **Snapshots** (above) make *starting* instant after the first boot.
+- **Render resolution.** iOS draws every pixel on the CPU, so the resolution is most of the cost. By
+  default the UI is rendered at 2× (750×1624) and the kernel upscales it to the panel — about 2.25×
+  fewer pixels per frame and roughly 3× the frame rate, a little softer (barely visible). `HACKIOS_FBSCALE=3`
+  renders at full native 3× (sharper, slower).
+- A newer QEMU is **not** faster: QEMU 8.2 and 10.0 both took 421–423 s to the home screen in the same test.
+
 ## What to expect
 
-- Slow: QEMU has no KVM here, so every instruction is translated (TCG). Snapshots (above) make starting
-  fast, but not using it. A newer QEMU is not faster: QEMU 8.2 and 10.0 both took 421–423 s to the home
-  screen in the same test. KVM is not available on Snapdragon Galaxy phones.
+- Slow: QEMU has no KVM here, so every instruction is translated (TCG). The UI renders at 2× for speed
+  (see above) and snapshots make starting fast, but running it is still unhurried.
 - The home/lock background is black (the stock white wallpaper needs a GPU; see above). Widgets, blur and
   photo wallpapers still need the GPU and are blank. Apps (Safari, Settings, Notes …) draw normally.
 - Network: Safari and apps reach the internet through QEMU's user network (iOS gets 10.0.2.15).
