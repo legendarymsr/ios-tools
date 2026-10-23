@@ -9,7 +9,6 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -36,7 +35,6 @@ public class VncActivity extends Activity implements RfbClient.Listener {
     private String host;
     private int port;
     private volatile boolean closing = false;
-    private boolean keyboardShown = false;
     private static final long RETRY_MS = 60_000;
 
     @Override protected void onCreate(Bundle b) {
@@ -56,13 +54,14 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setPadding(12, 4, 12, 4);
-        bar.addView(barButton("Keyboard", v -> toggleKeyboard()));
-        bar.addView(barButton("Esc", v -> view.tap(Keysyms.ESCAPE)));
-        bar.addView(barButton("Ctrl+C", v -> combo(Keysyms.CONTROL, 'c')));
-        bar.addView(barButton("Fit", v -> view.resetZoom()));
-        // iPhone 11 has no home button: both are swipes from the bottom edge.
+        // HackiOS's virtio keyboard is the phone's buttons, not a keyboard (redwood_virtio_input.c):
+        // Home = KEY_HOME, l = lock, Up/Down = volume. Text is typed on iOS's own on-screen keyboard.
+        bar.addView(barButton("Home", v -> view.tap(Keysyms.HOME)));
+        bar.addView(barButton("Lock", v -> view.tap('l')));
         bar.addView(barButton("Swipe up", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.30f, 450)));
-        bar.addView(barButton("Home", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.50f, 400)));
+        bar.addView(barButton("Vol +", v -> view.tap(Keysyms.UP)));
+        bar.addView(barButton("Vol −", v -> view.tap(Keysyms.DOWN)));
+        bar.addView(barButton("Fit", v -> view.resetZoom()));
         android.widget.HorizontalScrollView barScroll = new android.widget.HorizontalScrollView(this);
         barScroll.setHorizontalScrollBarEnabled(false);
         barScroll.addView(bar);
@@ -164,25 +163,7 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         netThread.start();
     }
 
-    private void toggleKeyboard() {
-        InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        if (imm == null) return;
-        if (keyboardShown) {
-            imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
-            keyboardShown = false;
-        } else {
-            view.requestFocus();
-            imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
-            keyboardShown = true;
-        }
-    }
 
-    private void combo(int modifier, int ch) {
-        if (client == null) return;
-        client.sendKey(modifier, true);
-        client.tapKey(Keysyms.forCodePoint(ch));
-        client.sendKey(modifier, false);
-    }
 
     // Called on the reader thread before any pixels at the new size arrive.
     @Override public void onResize(int w, int h) { view.onRemoteResize(w, h); }

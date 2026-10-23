@@ -26,11 +26,12 @@ Two QEMU deliverables for a rooted Android phone, each packaged as a
   Run ARM64 Linux / Windows-on-ARM guests under QEMU with hardware KVM. Needs a
   custom kernel (`CONFIG_KVM=y`) exposing `/dev/kvm`. Includes a prebuilt
   `kvmcheck` aarch64 binary.
-- **`QEMU/ios-t8030/`** — module `qemu-t8030-launcher-v1.1.5.zip`, app
-  "iOS Emu (t8030)". Emulate an iPhone 11 (iOS 14.x) in Inferno
-  (ex-QEMUAppleSilicon) under TCG — slow, no GPU, bring-up quality. On first
-  run the app auto-downloads the reference IPSW from Apple's CDN (~5.5 GB);
-  nothing from Apple is shipped in the repo.
+- **`QEMU/ios-t8030/`** — module `qemu-t8030-launcher-v2.0.0.zip`, app
+  "iOS VM (HackiOS)". iOS 16.5 in QEMU's `virt` machine with
+  [HackiOS](https://github.com/oosexgang) by OOSEX GANG, in a Debian chroot, with network.
+  TCG only (slow, no GPU). HackiOS's code and iOS 16.5 (from Apple's CDN) are fetched on the
+  phone; nothing of theirs or Apple's is in the repo. (The Inferno t8030 steps were removed in
+  v2.0.0; see `QEMU/ios-t8030/INFERNO.md`.)
 
 All three launcher apps have a built-in VNC viewer for the VM screen
 (`127.0.0.1:5900`); the Boot steps open it automatically.

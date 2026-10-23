@@ -257,7 +257,7 @@ mkdir -p "$ROOTFS/etc" "$ROOTFS/root" "$ROOTFS/usr/local/bin" \
 chmod 1777 "$ROOTFS/tmp" 2>/dev/null || true
 
 echo "[*] Copying helper scripts into chroot /root (if present)"
-for f in install-qemu.sh run-arm64-linux.sh run-woa.sh setup-build-deps.sh build-inferno.sh run-t8030.sh prepare-ios-files.sh download-and-configure.sh jailbreak-prep.sh patch-launchd.py; do
+for f in hackios.sh; do
   [ -f "$HERE/$f" ] && cp -f "$HERE/$f" "$ROOTFS/root/" 2>/dev/null || true
 done
 # Also stage xz into chroot in case scripts need it later
@@ -276,8 +276,7 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$ROOTFS/etc/resolv.conf" \
 cat > "$ROOTFS/root/.inside-notes" <<'NOTE'
 You are inside the Debian chroot. Next steps:
   apt-get update
-  # Part A (iOS t8030):      /root/build-inferno.sh
-  # Part B (general KVM):    /root/install-qemu.sh   then run-*.sh
+  # iOS 16.5 (HackiOS by OOSEX GANG):  /root/hackios.sh setup | build | run | stop | status
 NOTE
 
 echo "[*] Installing enter helper at $ROOTFS/../enter-debian.sh"

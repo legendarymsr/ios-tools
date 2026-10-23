@@ -123,7 +123,7 @@ public class MainActivity extends AppCompatActivity {
                 ensuringPayload = false;
                 long sec = (System.currentTimeMillis() - waitStartedMs) / 1000;
                 setWaitLog("No root after " + sec + "s. Open KernelSU → Superuser, allow "
-                        + "iOS Emu (t8030), then tap the step again.");
+                        + "iOS VM (HackiOS), then tap the step again.");
                 pendingStep = null;
                 waitStartedMs = 0;
                 return;
@@ -147,7 +147,7 @@ public class MainActivity extends AppCompatActivity {
                 ensuringPayload = false;
                 long sec = (System.currentTimeMillis() - waitStartedMs) / 1000;
                 setWaitLog("Payload extract failed after " + sec + "s: " + e.getMessage()
-                        + " — reinstall the qemu-t8030 module zip, then tap the step again.");
+                        + " — reinstall the launcher module zip, then tap the step again.");
                 pendingStep = null;
                 waitStartedMs = 0;
                 payload = null;

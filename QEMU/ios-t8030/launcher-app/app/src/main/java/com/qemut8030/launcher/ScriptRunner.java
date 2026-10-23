@@ -44,24 +44,6 @@ public final class ScriptRunner {
         }
         if (!out.exists() && !out.mkdirs()) throw new IOException("mkdir failed: " + out);
         copyAssetDir(ctx.getAssets(), "payload", out);
-        // Expand flat tarball if present (avoids AssetManager nested-dir quirks).
-        File tgz = new File(out, "vhci-bridge.tgz");
-        File bridgeDir = new File(out, "vhci-bridge");
-        File amalg = new File(out, "vhci-bridge.c");
-        if (tgz.isFile() && (!bridgeDir.isDirectory() || !new File(bridgeDir, "bridge.c").isFile())) {
-            // busybox/toybox tar on Android host; best-effort. Chroot SYNC also unpacks.
-            try {
-                Process p = new ProcessBuilder("tar", "-xzf", tgz.getAbsolutePath(), "-C", out.getAbsolutePath())
-                        .redirectErrorStream(true).start();
-                p.waitFor();
-            } catch (Exception ignored) { /* chroot / scripts unpack later */ }
-        }
-        if (!new File(bridgeDir, "bridge.c").isFile() && amalg.isFile()) {
-            if (!bridgeDir.exists() && !bridgeDir.mkdirs()) {
-                throw new IOException("mkdir failed: " + bridgeDir);
-            }
-            // Leave amalgamation at payload root; scripts compile it directly.
-        }
         writeSmall(marker, want);
         return out;
     }

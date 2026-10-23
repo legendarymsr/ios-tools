@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # hackios.sh -- run HackiOS (iOS 16.5 user space on Apple's open-source XNU kernel) in QEMU's
-# `virt` machine inside this Debian chroot on the phone (launcher steps H1-H3).
+# `virt` machine inside this Debian chroot on the phone (launcher steps 2-4).
 #
 # HackiOS is by OOSEX GANG (@oodze, @netusd, @wannqn, @hxfuxyyXD):
 #   https://github.com/oosexgang  ·  https://hackios-web.vercel.app  ·  https://t.me/oosexgangdevs
@@ -103,7 +103,7 @@ do_setup() {
       || log "WARNING: could not pin hackios-xnu-userland to ${USERLAND_PIN:0:7}; using what setup.sh checked out"
   fi
   log "kernel repo at $(git -C "$DIR" rev-parse --short HEAD), userland repo at $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD)"
-  log "setup done - next: H2 (download iOS 16.5 + build the images)"
+  log "setup done - next: step 3 (download iOS 16.5 + build the images)"
 }
 
 # Fixes to HackiOS's checkout (pinned commits), each applied once; report them upstream:
@@ -163,8 +163,8 @@ JOBS
 
 do_build() {
   credit
-  [ -f "$DIR/common/build.sh" ] && [ -d "$DIR/.userland.git" ] || die "not set up yet - run H1 first"
-  command -v 7z >/dev/null || die "7z missing - run H1 first"
+  [ -f "$DIR/common/build.sh" ] && [ -d "$DIR/.userland.git" ] || die "not set up yet - run step 2 first"
+  command -v 7z >/dev/null || die "7z missing - run step 2 first"
   cd "$DIR"
   if [ ! -f ios165/.done-rootfs ] || [ ! -f ios165/.done-cryptex ] || [ ! -f ios165/.done-cryptex-app ]; then
     log "downloading iOS 16.5 (20F66) from Apple's CDN and extracting it (7.4 GB, resumes if interrupted)"
@@ -174,22 +174,22 @@ do_build() {
   fi
   fix_checkout
   log "building HackiOS's loader (xnuloader/loader.efi)"
-  bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from H1?)"
+  bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
   local jobs; jobs=$(net_jobs)
   log "building the images (HackiOS's prebuilt kernel and programs; boot jobs: $(basename "$jobs"))"
   SKIP="kernel loader boot" PREBUILT=1 RC_JOBS="$jobs" bash common/build.sh qemu-virt
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
     || die "the images were not built (see above)"
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
-  log "build done - next: H3 (boot)"
+  log "build done - next: step 4 (boot)"
 }
 
 do_run() {
   credit
-  cd "$DIR" 2>/dev/null || die "not set up yet - run H1 first"
-  [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images yet - run H2 first"
+  cd "$DIR" 2>/dev/null || die "not set up yet - run step 2 first"
+  [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images yet - run step 3 first"
   [ -z "$(qemu_pids)" ] || die "HackiOS is already running (Power off VM stops it)"
-  pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null && die "the Inferno iOS VM is running and uses the same VNC port - Power off VM first"
+  pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null && die "another iOS VM (qemu-t8030) is running on the same VNC port - stop it first"
   local avail; avail=$(awk '/^MemAvailable:/ { print int($2 / 1024) }' /proc/meminfo)
   if [ "${avail:-0}" -lt 3000 ]; then
     log "WARNING: only ${avail} MB of memory available; HackiOS wants about 2.5-3 GB. Close other apps if Android kills it."
@@ -215,9 +215,9 @@ do_stop() {
 
 do_status() {
   credit
-  [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (H1)"
-  [ -f "$DIR/ios165/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (H2)"
-  [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (H2)"
+  [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (step 2)"
+  [ -f "$DIR/ios165/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
+  [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (step 3)"
   [ -n "$(qemu_pids)" ] && log "running (pid $(qemu_pids | tr '\n' ' '))" || log "not running"
 }
 

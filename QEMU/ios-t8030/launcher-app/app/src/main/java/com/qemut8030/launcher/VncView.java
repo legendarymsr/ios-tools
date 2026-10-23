@@ -20,7 +20,7 @@ import android.view.inputmethod.InputConnection;
  * Draws the remote framebuffer fit-to-screen, with pinch zoom and two-finger pan.
  * Touch is forwarded as an absolute pointer with button 1 = finger: press on
  * finger down, streamed (throttled) moves while dragging, release on finger up.
- * Inferno's t8030 multitouch (mt-spi) turns that into iOS touches. Two fingers
+ * HackiOS's virtio tablet driver turns that into iOS touches. Two fingers
  * pinch-zoom / pan locally. Mouse wheel / hardware keyboard are passed through.
  */
 public class VncView extends View {
