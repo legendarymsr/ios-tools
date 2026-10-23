@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
 # force-net.sh — working reverse-tether for Inferno t8030 on Android
-# Companion first, then NET=1 boot. Guest still needs one ipconfig kick.
+# iOS first (no network), the USB-host VM in net mode once iOS is up, then the
+# DHCP kick typed into the guest's root shell.
 set -eu
 DATA="${DATA:-/root/InfernoData}"
 HERE=$(cd "$(dirname "$0")" && pwd)
+PREFIX="${PREFIX:-/opt/inferno-restore}"
+USB_SOCK="${USB_SOCK:-$DATA/restore/usb.sock}"
+export USB_SOCK
 
 echo "[*] stopping old VMs"
 bash "$HERE/companion-vm.sh" stop || true
 pkill -f 'qemu-system-aarch64.*-M t8030' || true
 sleep 2
 
-echo "[*] starting companion in net mode (mode 3 + bridge to SLIRP)"
-DATA="$DATA" bash "$HERE/companion-vm.sh" net
-echo "[*] companion up"
+# USB ethernet needs the v5 USB-host VM (cdc_ncm + bridge modules).
+if ! grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
+  echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm + bridge modules) - running build-restore-tools.sh (a few minutes, once)"
+  bash "$HERE/build-restore-tools.sh" || echo "[net] ERROR: build-restore-tools.sh failed - no network this boot"
+fi
 
-echo "[*] booting iOS with NET=1"
+# Boot iOS with networking off, its USB port pointed at the USB-host VM's
+# socket. That VM is not running yet: Inferno's USB host side (step 3's
+# usb-tcp-host-retry patch) retries the socket every 2 s, so iOS plugs into the
+# VM once it is started below, after iOS is up. Starting it first (NET=1) has
+# had iOS panic during boot.
+echo "[*] booting iOS (network comes up once iOS is running)"
+mkdir -p "$(dirname "$USB_SOCK")"
+rm -f "$USB_SOCK"
 cd "$DATA"
 SERLOG="$DATA/serial-boot.log"
 # The serial console is QEMU's stdin; feed it from a FIFO so the DHCP kick
@@ -25,7 +38,7 @@ exec 3<>"$FIFO"
 if [ ! -f "$DATA/JAILBREAK_APPLIED" ]; then
   echo "[!] no root shell on the serial console (step 8 not applied) - the DHCP kick below will not reach iOS"
 fi
-NET=1 NET_RETRY=0 bash "$HERE/run-t8030.sh" <&3 &
+NET=0 USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" bash "$HERE/run-t8030.sh" <&3 &
 IOS=$!
 echo "[*] iOS VM pid $IOS"
 echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
@@ -74,7 +87,16 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   until run_guest 'true' 20; do
     kill -0 "$IOS" 2>/dev/null || exit 0
   done
-  echo "[*] DHCP kick: iOS shell answered, setting up the network"
+  echo "[*] DHCP kick: iOS shell answered - starting the USB-host VM in net mode (mode 3 + bridge to SLIRP)"
+  if DATA="$DATA" bash "$HERE/companion-vm.sh" net; then
+    echo "[*] USB-host VM up; iOS plugs into it within seconds"
+    ( tail -n +1 -F "$DATA/companion/job.log" 2>/dev/null |
+        grep --line-buffered -E '^\[net\]|Switching device|mode' ) &
+  else
+    echo "[net] ERROR: the USB-host VM did not start (see above) - iOS stays up without network"
+    exit 0
+  fi
+  echo "[*] DHCP kick: setting up the network"
   START=$SECONDS; NEXT_NOTE=300; n=0; last_list=""
   while kill -0 "$IOS" 2>/dev/null; do
     run_guest 'L=$(/usr/sbin/ipconfig getiflist 2>/dev/null); [ -n "$L" ] || L="en0 en1 en2 en3 en4 en5 en6 en7 en8 en9"; echo IFLIST=$L' 60
@@ -111,7 +133,9 @@ echo "/usr/sbin/ipconfig set enN DHCP      (N: the USB ethernet, often en0)"
 echo "/usr/sbin/ipconfig getifaddr enN"
 echo "Expected: 10.0.2.x (gateway 10.0.2.2, DNS 10.0.2.3)"
 echo
-echo "[*] if it panics on mode-3, boot without NET=1, start companion after, then ipconfig"
 wait $IOS || true
 kill "$KICK" 2>/dev/null || true
+pkill -f "tail -n +1 -F $DATA/companion/job.log" 2>/dev/null || true
+echo "[*] iOS VM exited - stopping the USB-host VM"
+bash "$HERE/companion-vm.sh" stop || true
 rm -f "$FIFO"

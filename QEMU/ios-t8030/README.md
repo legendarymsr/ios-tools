@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.6.1.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.6.2.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.1.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.2.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -331,13 +331,14 @@ log strip under the buttons.
    ethernet (reverse tethering) through the USB-host VM. Can panic iOS 14.0 on
    the mode-3 switch (it then retries once without network), or the guest may
    never take a DHCP address. Prefer 6c.
-6c. **Force network (companion first + NET=1)**: runs `force-net.sh`. It stops
-   any running VMs, starts the USB-host VM in net mode first
-   (`companion-vm.sh net`: mode 3 + bridge to SLIRP), then boots iOS with
-   `NET=1 NET_RETRY=0`. iOS only takes an address when told to, and its USB
-   ethernet is not always `en0`, so 6c also types into the root shell on the
-   serial console (needs step 8 applied): it waits until the shell answers
-   (`[*] DHCP kick: iOS shell answered`), then asks iOS for its interfaces
+6c. **Boot iOS, then connect network**: runs `force-net.sh`. It stops any
+   running VMs and boots iOS with networking off, its USB port aimed at the
+   USB-host VM's socket (Inferno retries it every 2 s). Once iOS's root shell
+   answers on the serial console, it starts the USB-host VM in net mode
+   (`companion-vm.sh net`: mode 3 + bridge to SLIRP) and iOS plugs into it.
+   iOS only takes an address when told to, and its USB ethernet is not
+   always `en0`, so 6c also types into the root shell on the
+   serial console (needs step 8 applied): it asks iOS for its interfaces
    (`ipconfig getiflist`, logged as `[*] iOS network interfaces: ...`), runs
    DHCP on the `en*` ones and checks their addresses. Commands are typed 8
    bytes at a time (long bursts lose characters on the guest serial port) and
@@ -354,7 +355,8 @@ log strip under the buttons.
 
    Gateway `10.0.2.2`, DNS `10.0.2.3` (the USB-host VM's SLIRP). If iOS
    panics on the mode-3 switch, boot with step 6 (no network), start
-   `companion-vm.sh net` afterwards, then run the same `ipconfig` commands.
+   `companion-vm.sh net` afterwards, then run the same `ipconfig` commands
+   (6c already does it in that order).
 7. **Show READY / restore status**: shows what's configured, what's still
    missing, the restore state, and the jailbreak status.
 8. **Jailbreak bootstrap (after restore)**: see [Jailbreak](#jailbreak-what-you-get-honestly).
@@ -455,8 +457,8 @@ pages:
 - `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line;
   sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
   `SERIAL_QEMU` overrides.
-- `force-net.sh` — **v1.5.3** step 6c: USB-host VM in net mode first, then
-  `NET=1` boot; types the guest `ipconfig` DHCP kick (every `en*` interface iOS lists) into the serial console.
+- `force-net.sh` — **v1.5.3** step 6c: iOS boot first, USB-host VM in net
+  mode once iOS is up (v1.6.2); types the guest `ipconfig` DHCP kick (every `en*` interface iOS lists) into the serial console.
 - `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in
   `InfernoData/restore/state`).
 - `build-restore-tools.sh` — **v1.2.0** builds `/opt/inferno-restore`

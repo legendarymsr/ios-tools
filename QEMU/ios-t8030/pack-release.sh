@@ -84,7 +84,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.6.1: a SEP (Secure Enclave) crash is no longer blamed on the network."
+ui_print "- v1.6.2: step 6c boots iOS first and connects the network once iOS is up."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
