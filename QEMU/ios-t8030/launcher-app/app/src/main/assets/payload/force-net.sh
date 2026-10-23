@@ -30,6 +30,8 @@ mkdir -p "$(dirname "$USB_SOCK")"
 rm -f "$USB_SOCK"
 cd "$DATA"
 SERLOG="$DATA/serial-boot.log"
+: > "$SERLOG"   # don't let the kick read the previous boot's markers
+BOOT=$$         # per-boot tag in the guest markers
 # The serial console is QEMU's stdin; feed it from a FIFO so the DHCP kick
 # below can type into the guest's root shell.
 FIFO="$DATA/.serial-in"
@@ -38,7 +40,7 @@ exec 3<>"$FIFO"
 if [ ! -f "$DATA/JAILBREAK_APPLIED" ]; then
   echo "[!] no root shell on the serial console (step 8 not applied) - the DHCP kick below will not reach iOS"
 fi
-NET=0 USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" bash "$HERE/run-t8030.sh" <&3 &
+NET=0 NET_RETRY=0 PANIC_WATCH=1 USB_CONN_TYPE=unix USB_CONN_ADDR="$USB_SOCK" bash "$HERE/run-t8030.sh" <&3 &
 IOS=$!
 echo "[*] iOS VM pid $IOS"
 echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
@@ -66,9 +68,9 @@ type_cmd() {
 SEQ=0
 run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   SEQ=$((SEQ + 1))
-  type_cmd "$1; echo KICKDONE\$((7000+$SEQ))"
+  type_cmd "$1; echo KICKDONE${BOOT}x\$((7000+$SEQ))"
   local t=0
-  until grep -a -q "KICKDONE$((7000 + SEQ))" "$SERLOG" 2>/dev/null; do
+  until grep -a -q "KICKDONE${BOOT}x$((7000 + SEQ))" "$SERLOG" 2>/dev/null; do
     kill -0 "$IOS" 2>/dev/null || return 1
     sleep 1
     t=$((t + 1))
@@ -80,6 +82,7 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   done
 }
 (
+  set +e   # a timed-out guest command must not end the kick
   sleep 60
   # Wait for the root shell: a bare marker every 20 s until one comes back,
   # so the real commands don't burn their long timeouts while iOS boots.
@@ -90,8 +93,8 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   echo "[*] DHCP kick: iOS shell answered - starting the USB-host VM in net mode (mode 3 + bridge to SLIRP)"
   if DATA="$DATA" bash "$HERE/companion-vm.sh" net; then
     echo "[*] USB-host VM up; iOS plugs into it within seconds"
-    ( tail -n +1 -F "$DATA/companion/job.log" 2>/dev/null |
-        grep --line-buffered -E '^\[net\]|Switching device|mode' ) &
+    tail -n +1 -F "$DATA/companion/job.log" 2>/dev/null |
+      grep --line-buffered -E '^\[net\]|Switching device|mode' &
   else
     echo "[net] ERROR: the USB-host VM did not start (see above) - iOS stays up without network"
     exit 0
@@ -109,10 +112,10 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
       force=1
     fi
     if [ "$force" = 1 ] || [ $((n % 4)) = 0 ]; then
-      run_guest 'for i in $L; do case $i in en*) /usr/sbin/ipconfig set $i DHCP;; esac; done 2>/dev/null' 180
+      run_guest 'for i in ${L:-en0 en1 en2 en3 en4 en5}; do case $i in en*) /usr/sbin/ipconfig set $i DHCP;; esac; done 2>/dev/null' 180
       sleep 15
     fi
-    run_guest 'for i in $L; do echo NETIF=$i:$(/usr/sbin/ipconfig getifaddr $i); done 2>/dev/null' 180
+    run_guest 'for i in ${L:-en0 en1 en2 en3 en4 en5}; do echo NETIF=$i:$(/usr/sbin/ipconfig getifaddr $i); done 2>/dev/null' 180
     HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | head -1 | cut -d= -f2)
     if [ -n "$HIT" ]; then
       echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} (gateway 10.0.2.2, DNS 10.0.2.3) - DHCP kick done"
@@ -133,9 +136,15 @@ echo "/usr/sbin/ipconfig set enN DHCP      (N: the USB ethernet, often en0)"
 echo "/usr/sbin/ipconfig getifaddr enN"
 echo "Expected: 10.0.2.x (gateway 10.0.2.2, DNS 10.0.2.3)"
 echo
+cleanup() {
+  trap - EXIT INT TERM
+  pkill -P "$KICK" 2>/dev/null || true   # the kick's tail/grep/sleep/companion start
+  kill "$KICK" 2>/dev/null || true
+  pkill -f "tail -n [+]1 -F $DATA/companion/job.log" 2>/dev/null || true   # outlives a finished kick
+  pkill -f 'qemu-system-aarch64.*-M t8030' 2>/dev/null || true
+  echo "[*] iOS VM exited - stopping the USB-host VM"
+  bash "$HERE/companion-vm.sh" stop || true
+  rm -f "$FIFO"
+}
+trap cleanup EXIT INT TERM
 wait $IOS || true
-kill "$KICK" 2>/dev/null || true
-pkill -f "tail -n +1 -F $DATA/companion/job.log" 2>/dev/null || true
-echo "[*] iOS VM exited - stopping the USB-host VM"
-bash "$HERE/companion-vm.sh" stop || true
-rm -f "$FIFO"

@@ -208,7 +208,7 @@ echo "[*] machine: t8030,trustcache=$TRUSTCACHE,ticket=$TICKET,sep-fw=$SEPFW,sep
 echo "[*] booting t8030 (VNC on 127.0.0.1:5900 by default — connect a viewer)"
 SERLOG="$DATA/serial-boot.log"; : > "$SERLOG"
 PANIC_MARK="$DATA/.net-panic"; rm -f "$PANIC_MARK"
-if [ "$NET_STARTED" = 1 ]; then
+if [ "$NET_STARTED" = 1 ] || [ "${PANIC_WATCH:-0}" = 1 ]; then
   # panic watchdog: stop the VM on the first iOS panic line
   ( tail -n0 -F "$SERLOG" 2>/dev/null | while IFS= read -r l; do
       case "$l" in *"panic(cpu"*|*"wdog panic"*|*"Debugger called"*)
@@ -242,9 +242,11 @@ if [ "$NET_STARTED" = 1 ]; then
   echo "[net] iOS VM exited ($rc) - stopping the USB-host VM"
   bash "$HERE/companion-vm.sh" stop || true
   kill $(jobs -p) 2>/dev/null || true
+elif [ "${PANIC_WATCH:-0}" = 1 ]; then
+  kill $(jobs -p) 2>/dev/null || true   # the panic watchdog
 fi
-if [ "$NET_STARTED" = 1 ] && [ -s "$PANIC_MARK" ]; then
-  echo "[net] iOS PANICKED with networking on. Panic line(s):"
+if { [ "$NET_STARTED" = 1 ] || [ "${PANIC_WATCH:-0}" = 1 ]; } && [ -s "$PANIC_MARK" ]; then
+  echo "[net] iOS PANICKED. Panic line(s):"
   grep -a -m3 -E 'panic\(cpu|Debugger called' "$SERLOG" | sed 's/^/[net]   /'
   grep -q 'panic(cpu' "$SERLOG" || sed 's/^/[net]   /' "$PANIC_MARK"
   cp -f "$SERLOG" "$DATA/serial-net-panic.log"

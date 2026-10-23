@@ -119,7 +119,7 @@ if IP link add br0 type bridge 2>/dev/null || busybox brctl addbr br0; then
 else
   net "ERROR: cannot create a network bridge in the USB-host VM (bridge module missing? rebuild with step 5's tools: build-restore-tools.sh)"
 fi
-( done_if=""; paired=""; t0=$(date +%s); warned=""
+( done_if=""; paired=""; t0=$(date +%s); warned=""; linkst=""; pairerr=""
   while :; do
     for n in /sys/class/net/*; do
       i=${n##*/}
@@ -133,9 +133,21 @@ fi
         net "ERROR: could not add $i to the bridge"
       fi
     done
+    # Link state and traffic of the iPhone's USB ethernet, logged on change:
+    # cdc_ncm keeps carrier off until iOS reports the link connected, and a
+    # bridge port without carrier forwards nothing (iOS's DHCP never arrives).
+    st=""
+    for i in $done_if; do
+      st="$st $i carrier=$(cat /sys/class/net/$i/carrier 2>/dev/null || echo ?) state=$(cat /sys/class/net/$i/operstate 2>/dev/null) rx=$(cat /sys/class/net/$i/statistics/rx_packets 2>/dev/null) tx=$(cat /sys/class/net/$i/statistics/tx_packets 2>/dev/null)"
+    done
+    if [ -n "$st" ] && [ "$st" != "$linkst" ]; then linkst=$st; net "link:$st"; fi
+    # iOS may only bring its USB ethernet up once paired with this host.
     if [ -z "$paired" ] && [ -n "$(USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevice_id -l 2>/dev/null)" ]; then
       if out=$(USBMUXD_SOCKET_ADDRESS=127.0.0.1:27015 idevicepair pair 2>&1); then paired=1; net "paired with iOS ($out)"
-      else case "$out" in *"Please accept"*|*"trust"*|*"passcode"*) net "pairing: tap 'Trust' on the iOS screen if asked ($out)";; esac; fi
+      else
+        case "$out" in *"Please accept"*|*"trust"*|*"passcode"*) out="tap 'Trust' on the iOS screen if asked ($out)";; esac
+        [ "$out" != "$pairerr" ] && { pairerr=$out; net "pairing not done yet: $out"; }
+      fi
     fi
     if [ -z "$done_if" ] && [ -z "$warned" ] && [ $(( $(date +%s) - t0 )) -gt 900 ]; then
       warned=1
