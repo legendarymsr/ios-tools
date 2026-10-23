@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.4.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.5.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.4.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.5.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -122,13 +122,21 @@ iOS's aspect ratio; iOS still renders 1125×2436 and the kernel scales it onto t
 scales onto the real phone's 1080×2400. So the UI layout is unchanged and the whole screen — status bar
 to dock — fits the viewer.
 
+### Wallpaper: black, not white
+
+iOS 16.5's stock wallpaper (and any photo set as one) is GPU-composited and renders as a blank **white**
+screen without a GPU. Step 3 instead sets the default to iOS's procedural **"Stripe Black"** wallpaper,
+which the software renderer draws — a black background with a thin diagonal stripe. `HACKIOS_WALLPAPER=0`
+keeps iOS's stock default. A photo cannot be used: every wallpaper type this iOS ships (Bokeh, the
+stripes, the layered animation) is procedural, and a raster image needs the GPU.
+
 ## What to expect
 
 - Slow: QEMU has no KVM here, so every instruction is translated (TCG). Snapshots (above) make starting
   fast, but not using it. A newer QEMU is not faster: QEMU 8.2 and 10.0 both took 421–423 s to the home
   screen in the same test. KVM is not available on Snapdragon Galaxy phones.
-- Plain white home and lock screens, empty widgets: QEMU has no GPU for iOS, so CoreAnimation draws
-  without wallpaper, blur or widget contents. Apps (Safari, Settings, Notes …) draw normally.
+- The home/lock background is black (the stock white wallpaper needs a GPU; see above). Widgets, blur and
+  photo wallpapers still need the GPU and are blank. Apps (Safari, Settings, Notes …) draw normally.
 - Network: Safari and apps reach the internet through QEMU's user network (iOS gets 10.0.2.15).
 
 ## Scripts

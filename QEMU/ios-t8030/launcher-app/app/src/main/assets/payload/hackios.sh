@@ -27,7 +27,8 @@
 #      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below),
 #      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
 #      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone),
-#      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build).
+#      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
+#      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -261,6 +262,29 @@ do_build() {
   if [ "$(cat userland/.ios-tools-jb 2>/dev/null || echo off)" != "$jb" ]; then
     system=1; log "the system image is remade ($([ $jb = on ] && echo with || echo without) the jailbreak)"
   fi
+  # iOS's default wallpaper (ios-tools): the stock one (identifier 7400) is GPU-composited and comes up
+  # a blank white screen without a GPU under QEMU; the "Stripe Black" (7395) is procedural, so the
+  # software renderer draws it -- a black background with a thin diagonal stripe. HACKIOS_WALLPAPER=0
+  # keeps iOS's stock default. A photo cannot be a wallpaper here: every wallpaper type iOS 16.5 ships
+  # (Bokeh, the stripes, LayeredAnimation) is procedural, and a raster "poster" needs the GPU.
+  local want_wall=stripe-black; [ "${HACKIOS_WALLPAPER:-1}" = 0 ] && want_wall=stock
+  local dwp=ios165/rootfs/Library/Wallpaper/DefaultWallpapers~iphone.plist
+  if [ -f "$dwp" ]; then
+    [ -f "$dwp.ios-tools-orig" ] || cp "$dwp" "$dwp.ios-tools-orig"
+    python3 - "$dwp" "$want_wall" <<'PYWALL'
+import plistlib, sys
+f, want = sys.argv[1], sys.argv[2]
+if want == "stripe-black":
+    d = plistlib.load(open(f, "rb"))
+    d["default"] = {"wallpaperIdentifier": 7395, "collectionIdentifier": "2939274C-F444-4AA8-806E-6E3FAFBA79B1"}
+else:
+    d = plistlib.load(open(f + ".ios-tools-orig", "rb"))   # iOS's own default again
+plistlib.dump(d, open(f, "wb"))
+PYWALL
+    if [ "$(cat userland/.ios-tools-wallpaper 2>/dev/null || echo stock)" != "$want_wall" ]; then
+      system=1; log "wallpaper: $want_wall (the system image is remade)"
+    fi
+  fi
   # ours: keeps iOS's clock right after a snapshot is resumed (timesync/timesync.c in ios-tools)
   local ts
   for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
@@ -277,6 +301,7 @@ do_build() {
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
     || die "the images were not built (see above)"
   echo "$jb" > userland/.ios-tools-jb
+  echo "${want_wall:-stock}" > userland/.ios-tools-wallpaper
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
   log "build done - next: step 4 (boot)"
 }
