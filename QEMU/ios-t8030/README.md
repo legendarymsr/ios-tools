@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.6.3.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.7.0.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.3.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.7.0.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -371,6 +371,48 @@ log strip under the buttons.
 7. **Show READY / restore status**: shows what's configured, what's still
    missing, the restore state, and the jailbreak status.
 8. **Jailbreak bootstrap (after restore)**: see [Jailbreak](#jailbreak-what-you-get-honestly).
+
+### HackiOS: iOS 16.5 in QEMU `virt` (steps H1–H3)
+
+[**HackiOS**](https://hackios-web.vercel.app) by **OOSEX GANG**
+([@oodze](https://t.me/oodze), [@netusd](https://t.me/netusd), [@wannqn](https://t.me/wannqn),
+[@hxfuxyyXD](https://t.me/hxfuxyyXD); [github.com/oosexgang](https://github.com/oosexgang),
+news: [t.me/oosexgangdevs](https://t.me/oosexgangdevs)) boots Apple's open-source XNU kernel
+(`xnu-8796.121.2`, the kernel of iOS 16.5) and runs the unmodified iOS 16.5 user space on it.
+Besides their phone port it runs in QEMU's generic `virt` machine, which is what these steps use on
+the phone: no Apple-specific machine model, and a virtio network card, so iOS has internet through
+QEMU's own network. All credit for HackiOS goes to its authors. HackiOS is not affiliated with,
+authorised or endorsed by Apple Inc.
+
+Nothing of HackiOS is copied into this repository: `hackios.sh` clones
+[hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel) (Apple Public Source License 2.0)
+and [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland) (MIT) at pinned commits
+into the Debian chroot (`/root/hackios`) and runs their own scripts. iOS 16.5 (20F66) comes from
+Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
+
+- **H1. HackiOS: install** — `hackios.sh setup`: packages (QEMU for aarch64, UEFI firmware, gcc),
+  7-Zip 24.09 from [ip7z/7zip](https://github.com/ip7z/7zip) (checksum-verified; Debian's 7-Zip is too
+  old to read APFS), both HackiOS repositories via their `common/setup.sh`.
+- **H2. HackiOS: download iOS 16.5 + build images** — `hackios.sh build`: their `ios165/fetch.sh`
+  (7.4 GB download, resumes if interrupted; about 14 GB free space needed while it runs), their loader
+  built from source (`xnuloader/build.sh`, clang + lld), then `common/build.sh qemu-virt` with their
+  prebuilt kernel and programs → `userland/root.apfs` and `userland/system.apfs` (2.5 GB). The boot job
+  list asks configd for DHCP on `en0` (`net_test dhcp en0`, as their `rc.jobs.net` does): under QEMU
+  the virtio card has no IOKit object, so iOS does not configure it by itself. `HACKIOS_NET=0` builds
+  without it; `HACKIOS_JOBS=<file>` uses one of their `rc.jobs.*` lists instead.
+  Before building, `hackios.sh` fixes four bugs in the pinned HackiOS commits (reported upstream; each
+  fix is skipped once their code changes):
+  1. `userland/build.sh` copies `drawable_test`, which `prebuilt/userland` lacks, so the build stops;
+  2. `userland/build.sh` calls `timedatectl` under `set -e`, so it stops silently without systemd (a chroot);
+  3. `userland/mkjobs.py` reuses the loop variable `name`, so all ~400 on-demand iOS jobs (configd,
+     mDNSResponder, trustd, nsurlsessiond, …) overwrite one file and none can start: no network;
+  4. `xnuloader/loader.c` reads the fw_cfg DMA answer through a plain variable, so `-O1` folds the check
+     and the loader gives up on the 1125×2436 ramfb: black screen.
+- **H3. HackiOS: Boot iOS 16.5** — `hackios.sh run`: their `qemu/run-ios.sh` with the display on VNC
+  `127.0.0.1:5900` (the built-in viewer opens by itself), `QEMU_NET=1`, 4 vCPUs, a 2-hour session
+  (`HACKIOS_SECS`). TCG on the phone: the lock screen takes several minutes, and the screen dims after a while (tap to wake). Touch: the pointer with the
+  button held is a finger; swipe up from the bottom edge to unlock / go home, from the left edge for
+  back. **Power off VM** stops it. Don't run it at the same time as the Inferno VM (same VNC port).
 
 ### Apple IPSW URL used
 
@@ -468,6 +510,8 @@ pages:
 - `run-t8030.sh` — the full `qemu-system-aarch64 -M t8030 …` command line;
   sources `run.env` when present. `RESTORE_MODE=1|0`, `USB_CONN_TYPE/ADDR/PORT`,
   `SERIAL_QEMU` overrides.
+- `hackios.sh` — **v1.7.0** steps H1–H3: [HackiOS](https://github.com/oosexgang) (OOSEX GANG) in
+  QEMU `virt` (`setup` | `build` | `run` | `stop` | `status`).
 - `force-net.sh` — **v1.5.3** step 6c: iOS boot first, USB-host VM in net
   mode once iOS is up (v1.6.2); types the guest `ipconfig` DHCP kick (every `en*` interface iOS lists) into the serial console.
 - `restore-ios.sh` — **v1.2.0** step 5 orchestrator (detached worker, state in

@@ -84,7 +84,7 @@ cp -f "$MODPATH"/payload/vhci-bridge.c "$MODPATH"/payload/vhci-bridge.tgz \
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/vhci-bridge 2>/dev/null || true
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v1.6.3: step 6c serves iOS DHCP + NAT in the USB-host VM (ChefKiss wiki method), logs link/pairing/DHCP."
+ui_print "- v1.7.0: steps H1-H3 run HackiOS (iOS 16.5 on XNU in QEMU virt, with network) by OOSEX GANG - github.com/oosexgang"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -92,7 +92,7 @@ CUS
 cp "$APK" "$STAGE/app/qemu-t8030-launcher.apk"
 # payload scripts + patches
 PAYLOAD=(
-  build-inferno.sh build-restore-tools.sh check-sep.py companion-init.sh companion-vm.sh force-net.sh
+  build-inferno.sh build-restore-tools.sh check-sep.py companion-init.sh companion-vm.sh force-net.sh hackios.sh
   download-and-configure.sh idevicerestore-inferno.patch idevicerestore-tcg-timeouts.patch
   inferno-dart-error-lock.patch inferno-usb-tcp-host-retry.patch inferno-usb-tcp-host-retry-v1211.patch
   inferno-usb-tcp-host-retry-v130.patch inferno-usb-tcp-remote-async.patch

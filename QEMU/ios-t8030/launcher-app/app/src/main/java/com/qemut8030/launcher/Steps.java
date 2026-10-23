@@ -9,7 +9,10 @@ public final class Steps {
       + "Step 5 restores the IPSW automatically (idevicerestore + VHCI USB or a USB-host VM);\n"
       + "step 8 adds the bootstrap + root shell once the guest has been restored.\n"
       + "IPSW is downloaded from Apple's CDN at runtime (~5.5 GB) — nothing Apple\n"
-      + "is shipped in this app. Legal to download for yourself; do not redistribute.";
+      + "is shipped in this app. Legal to download for yourself; do not redistribute.\n"
+      + "H1-H3: HackiOS by OOSEX GANG (github.com/oosexgang) - iOS 16.5 on Apple's open-source\n"
+      + "XNU kernel in QEMU's virt machine, with network. Their code is cloned at run time\n"
+      + "(kernel APSL 2.0, userland MIT); iOS 16.5 comes from Apple's CDN. Not affiliated with Apple.";
 
     public static final class Step {
         public final String label; public final String command;
@@ -49,8 +52,9 @@ public final class Steps {
 
     /** "Power off VM" button: monitor system_powerdown, ~20 s, quit, then kill. */
     public static final String POWER_OFF =
-        "cp -f \"{P}\"/vm-power.sh /data/local/debian/root/ && chmod 0755 /data/local/debian/root/vm-power.sh; "
-      + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/vm-power.sh off'";
+        "cp -f \"{P}\"/vm-power.sh \"{P}\"/hackios.sh /data/local/debian/root/ "
+      + "&& chmod 0755 /data/local/debian/root/vm-power.sh /data/local/debian/root/hackios.sh; "
+      + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/vm-power.sh off; bash /root/hackios.sh stop'";
 
     public static final Step[] STEPS = new Step[] {
         new Step("1. Install & update Debian (chroot)",
@@ -93,6 +97,16 @@ public final class Steps {
         new Step("8. Jailbreak bootstrap (after restore)",
             SYNC
           + DETACH + "sh /data/local/enter-debian.sh 'DATA=/root/InfernoData bash /root/jailbreak-prep.sh stage'"),
+        // HackiOS (OOSEX GANG): iOS 16.5 on XNU in QEMU virt; hackios.sh clones their repositories.
+        new Step("H1. HackiOS: install (by OOSEX GANG)",
+            SYNC
+          + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh setup'"),
+        new Step("H2. HackiOS: download iOS 16.5 + build images (long)",
+            SYNC
+          + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh build'"),
+        new Step("H3. HackiOS: Boot iOS 16.5 (VNC, network)",
+            SYNC
+          + DETACH + "sh /data/local/enter-debian.sh 'bash /root/hackios.sh run'"),
     };
     private Steps() {}
 }
