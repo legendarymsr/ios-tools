@@ -99,19 +99,51 @@ public class VncView extends View {
         invalidate();
     }
 
+    /**
+     * The height of this view that is really on the screen. On some phones (seen on a Galaxy Z Flip 4)
+     * the view is laid out taller than what is visible, so fitting the picture to getHeight() pushed
+     * the bottom of the iPhone's screen off the display.
+     */
+    private int visibleHeight() {
+        int vh = getHeight();
+        android.graphics.Rect frame = new android.graphics.Rect();
+        getWindowVisibleDisplayFrame(frame);
+        int[] at = new int[2];
+        getLocationOnScreen(at);
+        int onScreen = frame.bottom - at[1];
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        int toEdge = Math.max(dm.heightPixels, getRootView().getHeight()) - at[1];
+        if (frame.height() > 0 && onScreen > 0) vh = Math.min(vh, onScreen);
+        if (toEdge > 0) vh = Math.min(vh, toEdge);
+        return Math.max(1, vh);
+    }
+
+    /** What the fit was made of, for the Fit button to show. */
+    public String describeFit() {
+        android.graphics.Rect frame = new android.graphics.Rect();
+        getWindowVisibleDisplayFrame(frame);
+        int[] at = new int[2];
+        getLocationOnScreen(at);
+        int bw, bh;
+        synchronized (bmpLock) { bw = bmp != null ? bmp.getWidth() : 0; bh = bmp != null ? bmp.getHeight() : 0; }
+        return "iOS " + bw + "x" + bh + ", view " + getWidth() + "x" + getHeight() + " at y=" + at[1]
+                + ", visible " + frame.width() + "x" + frame.height() + " (to y=" + frame.bottom + ")"
+                + ", used height " + visibleHeight() + ", scale " + String.format(java.util.Locale.US, "%.3f", scale);
+    }
+
     private void updateTransform() {
         int bw, bh;
         synchronized (bmpLock) {
             if (bmp == null) return;
             bw = bmp.getWidth(); bh = bmp.getHeight();
         }
-        int vw = getWidth(), vh = getHeight();
+        int vw = getWidth(), vh = visibleHeight();
         if (vw == 0 || vh == 0) return;
         float fit = Math.min(vw / (float) bw, vh / (float) bh);
         scale = fit * zoom;
         float dw = bw * scale, dh = bh * scale;
-        // centre when smaller than the view, otherwise clamp pan to the edges
-        float baseX = (vw - dw) / 2f, baseY = (vh - dh) / 2f;
+        // centred across, at the top (right under the buttons) when it fits; otherwise clamp pan to the edges
+        float baseX = (vw - dw) / 2f, baseY = dh <= vh ? 0f : (vh - dh) / 2f;
         if (dw <= vw) panX = 0; else panX = Math.max(-(dw - vw) / 2f, Math.min((dw - vw) / 2f, panX));
         if (dh <= vh) panY = 0; else panY = Math.max(-(dh - vh) / 2f, Math.min((dh - vh) / 2f, panY));
         tx = baseX + panX; ty = baseY + panY;
@@ -122,6 +154,12 @@ public class VncView extends View {
     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
         updateTransform();
+    }
+
+    // the system bars going away changes what is visible without changing this view's size
+    @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+        super.onLayout(changed, l, t, r, b);
+        post(() -> { updateTransform(); invalidate(); });
     }
 
     @Override protected void onDraw(Canvas canvas) {

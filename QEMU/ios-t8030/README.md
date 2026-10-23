@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.0.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.0.1.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.0.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.0.1.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.

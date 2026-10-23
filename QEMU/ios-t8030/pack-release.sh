@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: HackiOS only (the Inferno t8030 steps are gone); viewer buttons are the iPhone's Home/Lock/Volume"
+ui_print "- v@VER@: HackiOS only; the viewer fits iOS into the visible screen (Fit shows the sizes)"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."

@@ -8,8 +8,8 @@ android {
         applicationId = "com.qemut8030.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 60
-        versionName = "2.0.0"
+        versionCode = 61
+        versionName = "2.0.1"
     }
     // Committed debug key (standard "android" passwords) so every build signs
     // the same and installs over the previous one without an uninstall.

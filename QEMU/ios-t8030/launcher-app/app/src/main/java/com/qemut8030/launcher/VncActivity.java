@@ -61,7 +61,10 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         bar.addView(barButton("Swipe up", v -> view.swipe(0.5f, 0.995f, 0.5f, 0.30f, 450)));
         bar.addView(barButton("Vol +", v -> view.tap(Keysyms.UP)));
         bar.addView(barButton("Vol −", v -> view.tap(Keysyms.DOWN)));
-        bar.addView(barButton("Fit", v -> view.resetZoom()));
+        bar.addView(barButton("Fit", v -> {
+            view.resetZoom();
+            Toast.makeText(this, view.describeFit(), Toast.LENGTH_LONG).show();
+        }));
         android.widget.HorizontalScrollView barScroll = new android.widget.HorizontalScrollView(this);
         barScroll.setHorizontalScrollBarEnabled(false);
         barScroll.addView(bar);
