@@ -249,7 +249,13 @@ if [ "$NET_STARTED" = 1 ] && [ -s "$PANIC_MARK" ]; then
   grep -q 'panic(cpu' "$SERLOG" || sed 's/^/[net]   /' "$PANIC_MARK"
   cp -f "$SERLOG" "$DATA/serial-net-panic.log"
   echo "[net] full serial log: $DATA/serial-net-panic.log"
-  echo "[net] cause: USB ethernet mode switch (usbmuxd mode 3) is not stable on this iOS/Inferno build"
+  if grep -a -q 'SEP Panic' "$SERLOG"; then
+    # The emulated Secure Enclave crashed (e.g. "SEP Panic: :sars/sars:"):
+    # Inferno's SEP is fragile under TCG; not the USB ethernet.
+    echo "[net] cause: the emulated Secure Enclave (SEP) crashed - an Inferno/TCG issue, not the network; boot again"
+  else
+    echo "[net] cause: likely the USB ethernet mode switch (usbmuxd mode 3), not stable on this iOS/Inferno build"
+  fi
   if [ "${NET_RETRY:-1}" = 1 ]; then
     echo "[net] booting again WITHOUT network (NET=0)"
     NET=0 NET_RETRY=0 exec bash "$0" "$@"
