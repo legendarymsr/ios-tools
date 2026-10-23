@@ -40,7 +40,7 @@ echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
 # commands are typed 8 bytes at a time. Each ipconfig call takes seconds under
 # TCG, so every command ends with a marker (computed by the guest, so the echo
 # of the typed line can't match it) and the next one is only sent once that
-# marker shows up. Ctrl-C is sent once at the start and when a command hangs.
+# marker shows up. Ctrl-C is only sent when a command hangs.
 type_cmd() {
   local s="$1"
   while [ -n "$s" ]; do
@@ -67,9 +67,14 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   done
 }
 (
-  sleep 120
-  printf '\003' >&3   # drop anything half-typed on the console
-  sleep 1
+  sleep 60
+  # Wait for the root shell: a bare marker every 20 s until one comes back,
+  # so the real commands don't burn their long timeouts while iOS boots.
+  echo "[*] DHCP kick: waiting for the iOS root shell on the serial console"
+  until run_guest 'true' 20; do
+    kill -0 "$IOS" 2>/dev/null || exit 0
+  done
+  echo "[*] DHCP kick: iOS shell answered, setting up the network"
   START=$SECONDS; NEXT_NOTE=300; n=0; last_list=""
   while kill -0 "$IOS" 2>/dev/null; do
     run_guest 'L=$(/usr/sbin/ipconfig getiflist 2>/dev/null); [ -n "$L" ] || L="en0 en1 en2 en3 en4 en5 en6 en7 en8 en9"; echo IFLIST=$L' 60

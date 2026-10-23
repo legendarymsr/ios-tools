@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.5.9.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.6.0.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.5.9.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.0.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -336,7 +336,8 @@ log strip under the buttons.
    (`companion-vm.sh net`: mode 3 + bridge to SLIRP), then boots iOS with
    `NET=1 NET_RETRY=0`. iOS only takes an address when told to, and its USB
    ethernet is not always `en0`, so 6c also types into the root shell on the
-   serial console (needs step 8 applied): it asks iOS for its interfaces
+   serial console (needs step 8 applied): it waits until the shell answers
+   (`[*] DHCP kick: iOS shell answered`), then asks iOS for its interfaces
    (`ipconfig getiflist`, logged as `[*] iOS network interfaces: ...`), runs
    DHCP on the `en*` ones and checks their addresses. Commands are typed 8
    bytes at a time (long bursts lose characters on the guest serial port) and
