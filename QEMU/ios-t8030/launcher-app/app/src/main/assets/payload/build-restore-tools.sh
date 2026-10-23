@@ -58,7 +58,8 @@ LIBUSB_SHA256=5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85
 APT_PKGS="git build-essential pkg-config autoconf automake libtool libtool-bin m4 \
   libssl-dev libcurl4-openssl-dev libzip-dev zlib1g-dev libreadline-dev \
   busybox-static cpio kmod usbutils bc bison flex libelf-dev \
-  curl ca-certificates xz-utils bzip2 python3 file"
+  curl ca-certificates xz-utils bzip2 python3 file \
+  dnsmasq-base nftables tcpdump"
 
 retry() { local n="$1"; shift; local i; for i in $(seq 1 "$n"); do "$@" && return 0; warn "attempt $i/$n failed: $*"; sleep $((i * 5)); done; return 1; }
 
@@ -184,7 +185,50 @@ CVM="$PREFIX/companion"
 # Modules the VM needs (Debian builds all of these as =m; deps are resolved
 # from modules.dep). virtio-pci/net/blk + 9p for the shared folders, EHCI for
 # the emulated iPhone, apfs for the restored System volume.
-WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p usbcore ehci_hcd ehci_pci cdc_ncm bridge"
+# nf_tables/nft_chain_nat/nft_masq: NAT for the routed reverse tethering
+# (companion-vm.sh net); "?" marks modules the VM can live without.
+WANT_MODS="virtio_pci virtio_net virtio_blk 9pnet_virtio 9p usbcore ehci_hcd ehci_pci cdc_ncm bridge ?nf_tables ?nft_chain_nat ?nft_masq"
+
+# cdc_ncm for the USB-host VM with the link up from the start. The stock
+# driver (FLAG_LINK_INTR) keeps carrier off until the device sends a CDC
+# NETWORK_CONNECTION notification; if the emulated iPhone never sends one,
+# nothing it sends gets through. Real notifications are still honoured. The
+# source is the exact upstream stable file for the Debian kernel (version from
+# its changelog), built against the Debian headers like apfs.ko. Prints the
+# .ko path on success; any failure keeps the stock module. NCM_STOCK=1 skips it.
+build_ncm_linkup() {
+  local deb="$1" kdir="$2" kver="$3" w="$SRC/cdc_ncm_linkup" cl up
+  [ "${NCM_STOCK:-0}" = 1 ] && return 1
+  # Upstream version: the image package's Version (6.1.176-1), else the
+  # first changelog line (linux-signed-arm64 (6.1.176+1) ...).
+  up=$(dpkg-deb -f "$(ls "$deb"/../linux-image-*.deb 2>/dev/null | head -n1)" Version 2>/dev/null \
+       | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+  if [ -z "$up" ]; then
+    cl=$(ls "$deb"/usr/share/doc/linux-image-*/changelog.Debian.gz 2>/dev/null | head -n1)
+    up=$( [ -n "$cl" ] && zcat "$cl" | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
+  fi
+  [ -n "$up" ] || { warn "cdc_ncm link-up: kernel upstream version unknown - stock cdc_ncm"; return 1; }
+  rm -rf "$w"; mkdir -p "$w"
+  retry 3 curl -fsSL -o "$w/cdc_ncm.c" \
+    "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drivers/net/usb/cdc_ncm.c?h=v$up" \
+    || { warn "cdc_ncm link-up: could not fetch cdc_ncm.c v$up - stock cdc_ncm"; return 1; }
+  python3 - "$w/cdc_ncm.c" <<'PYNCM' || { warn "cdc_ncm link-up: patch did not apply to v$up - stock cdc_ncm"; return 1; }
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+m = re.search(r"static const struct driver_info cdc_ncm_info = \{.*?\n\};", s, re.S)
+if not m or "FLAG_LINK_INTR" not in m.group(0):
+    sys.exit(1)
+blk = re.sub(r"\s*\|\s*FLAG_LINK_INTR", "", m.group(0))
+open(p, "w").write(s[:m.start()] + blk + s[m.end():])
+PYNCM
+  echo 'obj-m += cdc_ncm.o' > "$w/Makefile"
+  make -C "$kdir" M="$w" -j"$JOBS" modules >&2 \
+    || { warn "cdc_ncm link-up: module build failed - stock cdc_ncm"; return 1; }
+  [ "$(modinfo -F vermagic "$w/cdc_ncm.ko" 2>/dev/null | awk '{print $1}')" = "$kver" ] \
+    || { warn "cdc_ncm link-up: vermagic mismatch - stock cdc_ncm"; return 1; }
+  log "cdc_ncm link-up module built from upstream v$up (carrier on without a NETWORK_CONNECTION notification)" >&2
+  echo "$w/cdc_ncm.ko"
+}
 
 build_companion() {
   local kpkg kver
@@ -194,7 +238,7 @@ build_companion() {
   [ -n "$kpkg" ] || die "could not resolve Debian's current arm64 kernel package (apt-cache depends linux-image-arm64)"
   kver=${kpkg#linux-image-}
   local apfsref; apfsref=$(repo_field linux-apfs-rw 3)
-  if stamp_ok companion "$kver $apfsref v5" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
+  if stamp_ok companion "$kver $apfsref v6" && [ -s "$CVM/vmlinuz" ] && [ -s "$CVM/initrd.img" ]; then
     log "USB-host VM kernel/initramfs already built ($kver)"; return 0
   fi
   log "USB-host VM: Debian kernel $kver"
@@ -272,10 +316,11 @@ def visit(m):
     for d in deps.get(m, []): visit(d)
     out.append(m)
 for n in want:
-    n = n.replace("-", "_")
+    optional = n.startswith("?")
+    n = n.lstrip("?").replace("-", "_")
     if n not in byname:
-        if n in builtin:
-            continue  # built into the kernel (=y)
+        if n in builtin or optional:
+            continue  # built into the kernel (=y), or not needed
         sys.exit("missing module: " + n)
     visit(byname[n])
 print("\n".join(out))
@@ -296,6 +341,10 @@ PY
   grep -qx crc32c_generic "$ird/modules/order" || grep -q crc32c_generic "$mdir/modules.builtin" 2>/dev/null \
     || die "crc32c_generic missing from the USB-host VM initramfs - apfs would fail to load (libcrc32c needs it)"
   cp "$SRC/linux-apfs-rw/apfs.ko" "$ird/modules/apfs.ko"; echo apfs >> "$ird/modules/order"
+  local ncm
+  if ncm=$(build_ncm_linkup "$w/deb" "$kdir" "$kver") && [ -f "$ird/modules/cdc_ncm.ko" ]; then
+    cp "$ncm" "$ird/modules/cdc_ncm.ko"
+  fi
   cp /bin/busybox "$ird/bin/busybox" || die "busybox-static missing (/bin/busybox)"
   busybox_static=$(file -b "$ird/bin/busybox")
   case "$busybox_static" in *static*) ;; *) die "/bin/busybox is not static ($busybox_static) - install busybox-static";; esac
@@ -305,7 +354,7 @@ PY
   mv -f "$CVM/vmlinuz.new" "$CVM/vmlinuz"; mv -f "$CVM/initrd.img.new" "$CVM/initrd.img"
   echo "$kver" > "$CVM/KVER"
   rm -rf "$w"
-  stamp companion "$kver $apfsref v5"
+  stamp companion "$kver $apfsref v6"
   log "USB-host VM ready: $CVM/vmlinuz + initrd.img (kernel $kver, $(echo $order | wc -w) modules + apfs)"
 }
 

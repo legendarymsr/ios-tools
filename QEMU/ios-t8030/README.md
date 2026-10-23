@@ -5,7 +5,7 @@ Boot an emulated **iPhone 11 (t8030, Apple A13)** running **iOS 14.x** under
 *qemu-t8030* fork by TrungNguyen1909). Packaged as a KernelSU/Magisk module that
 installs the **iOS Emu (t8030)** launcher app.
 
-- Module zip: **`qemu-t8030-launcher-v1.6.2.zip`**
+- Module zip: **`qemu-t8030-launcher-v1.6.3.zip`**
 - App package: `com.qemut8030.launcher` (label "iOS Emu (t8030)")
 - App source: [`launcher-app/`](launcher-app/)
 - Upstream: https://github.com/ChefKissInc/Inferno · guide: https://chefkiss.dev/applehax/inferno/
@@ -284,7 +284,7 @@ Limits:
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.2.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v1.6.3.zip`, reboot.
 2. Open "iOS Emu (t8030)", grant root.
 
 ## Use (buttons, top to bottom)
@@ -335,7 +335,17 @@ log strip under the buttons.
    running VMs and boots iOS with networking off, its USB port aimed at the
    USB-host VM's socket (Inferno retries it every 2 s). Once iOS's root shell
    answers on the serial console, it starts the USB-host VM in net mode
-   (`companion-vm.sh net`: mode 3 + bridge to SLIRP) and iOS plugs into it.
+   (`companion-vm.sh net`, usbmuxd mode 3) and iOS plugs into it. The
+   USB-host VM serves the iPhone's USB ethernet the way the ChefKiss wiki
+   ("6. Reverse-Tethering") describes: the interface gets `10.11.12.1/24`,
+   dnsmasq hands iOS `10.11.12.20+` (router and DNS `10.11.12.1`, DNS
+   forwarded to slirp's `10.0.2.3`) and nftables masquerades it out through
+   the VM's slirp NIC. `NET_MODE=bridge` bridges the interface onto the slirp
+   NIC instead (slirp's DHCP: `10.0.2.20+`, gateway `10.0.2.2`, DNS
+   `10.0.2.3`). The VM logs, as `[net] ...` lines: link state and packet
+   counters of the interface (`carrier=0` means iOS never reported the link
+   up), pairing (`idevicepair pair`; tap **Trust** on the iOS screen if asked)
+   and every DHCP request dnsmasq sees (`DHCPDISCOVER(usb0) ...`).
    iOS only takes an address when told to, and its USB ethernet is not
    always `en0`, so 6c also types into the root shell on the
    serial console (needs step 8 applied): it asks iOS for its interfaces
@@ -344,19 +354,20 @@ log strip under the buttons.
    bytes at a time (long bursts lose characters on the guest serial port) and
    each one is waited for before the next is sent (every `ipconfig` call takes
    seconds under TCG); Ctrl-C only clears a hung command. The first
-   interface with a `10.0.2.x` lease wins, the kick stops and logs
-   `[*] iOS has network: en2 10.0.2.15 ...`; it keeps trying for as long as
+   interface with a lease from the USB-host VM wins, the kick stops and logs
+   `[*] iOS has network: en0 10.11.12.20 ...`; it keeps trying for as long as
    the VM runs. By hand, on the serial console (`enN` = that interface):
 
    ```sh
    /usr/sbin/ipconfig set enN DHCP
-   /usr/sbin/ipconfig getifaddr enN   # expect 10.0.2.x
+   /usr/sbin/ipconfig getifaddr enN   # expect 10.11.12.x
    ```
 
-   Gateway `10.0.2.2`, DNS `10.0.2.3` (the USB-host VM's SLIRP). If iOS
-   panics on the mode-3 switch, boot with step 6 (no network), start
+   If iOS panics on the mode-3 switch, boot with step 6 (no network), start
    `companion-vm.sh net` afterwards, then run the same `ipconfig` commands
-   (6c already does it in that order).
+   (6c already does it in that order). The first 6c after updating rebuilds
+   the USB-host VM once (NAT modules) and installs dnsmasq-base, nftables
+   and tcpdump in the chroot.
 7. **Show READY / restore status**: shows what's configured, what's still
    missing, the restore state, and the jailbreak status.
 8. **Jailbreak bootstrap (after restore)**: see [Jailbreak](#jailbreak-what-you-get-honestly).
@@ -465,7 +476,9 @@ pages:
   (libimobiledevice stack, idevicerestore + patch, usbmuxd, no-udev libusb,
   InfernoFSPatcher, USB-host VM kernel/initramfs + apfs.ko).
 - `companion-vm.sh` / `companion-init.sh` — **v1.2.0** the USB-host VM
-  (`usbmux` | `apfs-run CMD` | `stop` | `status`) and its initramfs `/init`.
+  (`usbmux` | `net` | `apfs-run CMD` | `stop` | `status`) and its initramfs
+  `/init`. `net` (v1.6.3): reverse tethering, routed with dnsmasq + NAT by
+  default, `NET_MODE=bridge` for the old bridge to slirp.
 - `idevicerestore-inferno.patch` — ChefKiss's idevicerestore patch (maps the
   emulated `…DEV` hardware model to `…AP`).
 

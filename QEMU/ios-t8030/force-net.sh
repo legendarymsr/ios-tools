@@ -14,9 +14,10 @@ bash "$HERE/companion-vm.sh" stop || true
 pkill -f 'qemu-system-aarch64.*-M t8030' || true
 sleep 2
 
-# USB ethernet needs the v5 USB-host VM (cdc_ncm + bridge modules).
-if ! grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
-  echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm + bridge modules) - running build-restore-tools.sh (a few minutes, once)"
+# USB ethernet needs the v6 USB-host VM (cdc_ncm, bridge and NAT modules;
+# dnsmasq/nftables/tcpdump in the chroot).
+if ! grep -q ' v6$' "$PREFIX/.built-companion" 2>/dev/null; then
+  echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm, bridge and NAT modules, dnsmasq) - running build-restore-tools.sh (a few minutes, once)"
   bash "$HERE/build-restore-tools.sh" || echo "[net] ERROR: build-restore-tools.sh failed - no network this boot"
 fi
 
@@ -48,7 +49,8 @@ echo "[*] wait for SpringBoard on VNC 127.0.0.1:5900"
 # iOS only asks for an address when told to, and the USB ethernet is not
 # always en0. Once the root shell is up, ask iOS for its interfaces
 # (ipconfig getiflist, else en0-en9), run DHCP on the en* ones and check their
-# addresses; the first with a 10.0.2.x lease wins and the kick stops. Runs as
+# addresses; the first with a lease from the USB-host VM (10.11.12.x routed,
+# 10.0.2.x with NET_MODE=bridge) wins and the kick stops. Runs as
 # long as the VM does.
 #
 # Long lines sent in one burst lose characters on the guest serial port, so
@@ -90,7 +92,7 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
   until run_guest 'true' 20; do
     kill -0 "$IOS" 2>/dev/null || exit 0
   done
-  echo "[*] DHCP kick: iOS shell answered - starting the USB-host VM in net mode (mode 3 + bridge to SLIRP)"
+  echo "[*] DHCP kick: iOS shell answered - starting the USB-host VM in net mode (mode 3, ${NET_MODE:-routed})"
   if DATA="$DATA" bash "$HERE/companion-vm.sh" net; then
     echo "[*] USB-host VM up; iOS plugs into it within seconds"
     tail -n +1 -F "$DATA/companion/job.log" 2>/dev/null |
@@ -116,14 +118,18 @@ run_guest() {   # run_guest CMD TIMEOUT_S: type CMD, wait until it has finished
       sleep 15
     fi
     run_guest 'for i in ${L:-en0 en1 en2 en3 en4 en5}; do echo NETIF=$i:$(/usr/sbin/ipconfig getifaddr $i); done 2>/dev/null' 180
-    HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.0\.2\.[0-9]*' "$SERLOG" 2>/dev/null | head -1 | cut -d= -f2)
+    HIT=$(grep -a -o 'NETIF=en[0-9]*:10\.\(11\.12\|0\.2\)\.[0-9]*' "$SERLOG" 2>/dev/null | head -1 | cut -d= -f2)
     if [ -n "$HIT" ]; then
-      echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} (gateway 10.0.2.2, DNS 10.0.2.3) - DHCP kick done"
+      case "${HIT#*:}" in
+        10.11.12.*) GW="gateway and DNS 10.11.12.1" ;;
+        *) GW="gateway 10.0.2.2, DNS 10.0.2.3" ;;
+      esac
+      echo "[*] iOS has network: ${HIT%%:*} ${HIT#*:} ($GW) - DHCP kick done"
       exit 0
     fi
     n=$((n + 1))
     if [ $((SECONDS - START)) -ge "$NEXT_NOTE" ]; then
-      echo "[*] DHCP kick: no 10.0.2.x lease yet ($(( (SECONDS - START) / 60 )) min), still trying"
+      echo "[*] DHCP kick: no lease yet ($(( (SECONDS - START) / 60 )) min), still trying"
       NEXT_NOTE=$((NEXT_NOTE + 300))
     fi
     sleep 10
@@ -134,7 +140,7 @@ KICK=$!
 echo "[*] DHCP kick runs by itself; by hand on the serial console it is:"
 echo "/usr/sbin/ipconfig set enN DHCP      (N: the USB ethernet, often en0)"
 echo "/usr/sbin/ipconfig getifaddr enN"
-echo "Expected: 10.0.2.x (gateway 10.0.2.2, DNS 10.0.2.3)"
+echo "Expected: 10.11.12.x (gateway/DNS 10.11.12.1; NET_MODE=bridge: 10.0.2.x, gateway 10.0.2.2, DNS 10.0.2.3)"
 echo
 cleanup() {
   trap - EXIT INT TERM

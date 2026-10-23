@@ -139,8 +139,9 @@ fi
 # --- Network (reverse tethering, ChefKiss's documented method) ---------------
 # The iPhone has no Wi-Fi hardware in Inferno. On a normal boot the USB-host VM
 # (companion-vm.sh net) is started first: its usbmuxd switches iOS to USB mode 3
-# (usbmux + CDC-NCM ethernet), the NCM link is bridged to the VM's QEMU slirp
-# NIC, and slirp's DHCP gives iOS 10.0.2.20 (gateway 10.0.2.2, DNS 10.0.2.3).
+# (usbmux + CDC-NCM ethernet); the VM's dnsmasq gives iOS 10.11.12.20+ (router
+# and DNS 10.11.12.1) and NATs it out through its QEMU slirp NIC
+# (NET_MODE=bridge: bridged to slirp, whose DHCP gives 10.0.2.20).
 # Traffic goes out through the phone's own connection; no root network setup.
 # Opt-in (NET=1, "Boot iOS with network (experimental)"): on iOS 14.0 the
 # mode-3 switch has been seen to panic the guest. If a panic shows up on the
@@ -150,11 +151,11 @@ PREFIX="${PREFIX:-/opt/inferno-restore}"
 NET_STARTED=0
 if [ "$MODE" != "1" ] && [ "${NET:-0}" = 1 ] && [ -z "${USB_CONN_TYPE:-}" ]; then
   echo "[net] setting up network for iOS (USB ethernet via the USB-host VM)"
-  if ! grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
-    echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm + bridge modules) - running build-restore-tools.sh (a few minutes, once)"
+  if ! grep -q ' v6$' "$PREFIX/.built-companion" 2>/dev/null; then
+    echo "[net] USB-host VM needs a rebuild for USB ethernet (cdc_ncm, bridge and NAT modules, dnsmasq) - running build-restore-tools.sh (a few minutes, once)"
     bash "$HERE/build-restore-tools.sh" || echo "[net] ERROR: build-restore-tools.sh failed - booting without network"
   fi
-  if grep -q ' v5$' "$PREFIX/.built-companion" 2>/dev/null; then
+  if grep -q ' v6$' "$PREFIX/.built-companion" 2>/dev/null; then
     bash "$HERE/companion-vm.sh" stop >/dev/null 2>&1 || true
     if DATA="$DATA" bash "$HERE/companion-vm.sh" net; then
       USB_CONN_TYPE=unix; USB_CONN_ADDR="${USB_SOCK:-$DATA/restore/usb.sock}"; NET_STARTED=1

@@ -45,10 +45,12 @@ PKGS="git build-essential cmake libtool meson ninja-build pkg-config \
   python3 python3-pip python3-venv python3-setuptools python3-wheel \
   curl ca-certificates unzip wget xz-utils file bzip2 tar m4 \
   autoconf automake libtool-bin libcurl4-openssl-dev libzip-dev libreadline-dev \
-  busybox-static cpio kmod usbutils bc bison flex libelf-dev"
-# The last two lines are for step 5 (Restore iOS): build-restore-tools.sh
+  busybox-static cpio kmod usbutils bc bison flex libelf-dev \
+  dnsmasq-base nftables tcpdump"
+# The last three lines are for step 5 (Restore iOS): build-restore-tools.sh
 # builds libimobiledevice/idevicerestore/usbmuxd (autotools, libcurl, libzip)
-# and the USB-host VM (busybox-static initramfs, kmod, linux-apfs-rw module).
+# and the USB-host VM (busybox-static initramfs, kmod, linux-apfs-rw module);
+# dnsmasq/nftables/tcpdump serve and NAT the iPhone's USB ethernet in that VM.
 ok=0
 for i in 1 2 3; do
   # shellcheck disable=SC2086
