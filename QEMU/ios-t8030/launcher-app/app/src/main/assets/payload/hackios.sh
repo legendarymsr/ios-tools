@@ -30,12 +30,21 @@
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
 #      HACKIOS_NEWTERM=0 (leave out the bundled NewTerm terminal app; needs the jailbreak; next build),
 #      NEWTERM_DEB=<path> (bundle this local NewTerm .deb instead of fetching it from Chariz),
+#      HACKIOS_ROOTFUL=1 (experimental: an ephemeral writable-root overlay -- a ramfs union over the
+#      system dirs so files can be created in /Applications, /Library, ... in memory; lost on a cold
+#      boot, cannot change existing read-only system files; next build), HACKIOS_ROOTFUL_DIRS="/A /B"
+#      (which directories the overlay covers; default "/Applications /Library"),
 #      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
 #      HACKIOS_FBSCALE=2 (render the UI at 2x and upscale: less CPU per frame, a bit softer; it did not
 #      change the frame rate in testing, so the default is native 3).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
+# optional local overrides: a file of `HACKIOS_...=...` lines next to this script, so experimental
+# flags (e.g. HACKIOS_ROOTFUL=1) can be turned on without changing the launcher's build command --
+# create /root/.hackios-env in the chroot with the settings you want.
+# shellcheck disable=SC1091
+[ -f "$HERE/.hackios-env" ] && . "$HERE/.hackios-env" || true
 KERNEL_URL=https://github.com/oosexgang/hackios-xnu-kernel.git
 USERLAND_URL=https://github.com/oosexgang/hackios-xnu-userland.git
 KERNEL_PIN=8e61187098f2c26c5daee8f9f72b6416aa64b9ab     # 2026-10-22 "Add LICENSE"
@@ -176,6 +185,10 @@ fixes = [
    "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n",
    "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n"
    "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n"),
+  ("userland/build.sh",
+   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n",
+   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n"
+   "\t[ -f obj/rootful ] && cp obj/rootful root/bin/          # ios-tools hackios.sh: the ephemeral rootful overlay helper\n"),
   ("qemu/run-ios.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
@@ -223,6 +236,13 @@ net_jobs() {
 # keep the clock right (it is behind after a snapshot is resumed): the host's clock, else SNTP
 /redwood/bin/timesync &
 JOBS
+  # the ephemeral rootful overlay (opt-in): writable ramfs unions over the system directories, so
+  # files can be created in /Applications, /Library, ... (in memory). Runs before the jailbreak prep
+  # so the overlay is in place first. HACKIOS_ROOTFUL_DIRS overrides the default set.
+  if [ "${HACKIOS_ROOTFUL:-0}" != 0 ]; then
+    printf '# ios-tools: ephemeral rootful overlay (writable ramfs union over the system dirs)\n' >> "$f"
+    printf '/redwood/bin/rootful %s\n' "${HACKIOS_ROOTFUL_DIRS:-/Applications /Library}" >> "$f"
+  fi
   if [ -d "$DIR/jb/root/var/jb" ]; then
     # the jailbreak, as HackiOS's rc.jobs.jb has it: the prefix's preparation once per boot (dpkg's
     # "firmware", Sileo registered with LaunchServices), then fresh package lists for Sileo and apt
@@ -500,6 +520,17 @@ PYWALL
   for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
     if [ -f "$ts" ]; then cp -f "$ts" userland/obj/timesync; break; fi
   done
+  # ours (opt-in, HACKIOS_ROOTFUL=1): the ephemeral rootful overlay helper (rootful/rootful.c in
+  # ios-tools). Only placed in the image when asked for; net_jobs runs it at boot. Removed from obj
+  # otherwise so a later HACKIOS_ROOTFUL=0 build drops it from the image.
+  rm -f userland/obj/rootful
+  if [ "${HACKIOS_ROOTFUL:-0}" != 0 ]; then
+    local rf
+    for rf in "$HERE/rootful-arm64" "$HERE/rootful/rootful-arm64"; do
+      if [ -f "$rf" ]; then cp -f "$rf" userland/obj/rootful; break; fi
+    done
+    [ -f userland/obj/rootful ] || log "rootful: HACKIOS_ROOTFUL=1 but rootful-arm64 not found - overlay left out"
+  fi
   # iOS's time zone: Android's (the launcher passes it), checked against the zones iOS has
   if [ -n "${HACKIOS_TZ:-}" ] && [ ! -e "ios165/rootfs/usr/share/zoneinfo.default/$HACKIOS_TZ" ]; then
     log "time zone $HACKIOS_TZ is not one iOS has: UTC"; unset HACKIOS_TZ

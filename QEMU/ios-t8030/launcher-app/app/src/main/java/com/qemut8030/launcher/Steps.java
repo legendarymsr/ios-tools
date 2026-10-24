@@ -25,7 +25,8 @@ public final class Steps {
     static final String SYNC =
         "mkdir -p /data/local/debian/root && cp -f \"{P}\"/hackios.sh \"{P}\"/timesync-arm64 /data/local/debian/root/ "
       + "&& chmod 0755 /data/local/debian/root/hackios.sh; "
-      + "cp -f \"{P}\"/ws.hbang.newterm3_iphoneos-arm64.deb /data/local/debian/root/ 2>/dev/null; ";
+      + "cp -f \"{P}\"/ws.hbang.newterm3_iphoneos-arm64.deb /data/local/debian/root/ 2>/dev/null; "
+      + "cp -f \"{P}\"/rootful-arm64 /data/local/debian/root/ 2>/dev/null; ";
 
     /** "Power off VM" button. */
     public static final String POWER_OFF =
