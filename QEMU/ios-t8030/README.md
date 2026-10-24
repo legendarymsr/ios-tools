@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.7.2.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.7.3.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.7.2.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.7.3.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -97,27 +97,28 @@ Procursus `firmware` pseudo-package otherwise trips up.
 - `NEWTERM_DEB=<path>` bundles a local NewTerm `.deb` instead of fetching it (use the `iphoneos-arm64`,
   i.e. rootless, build — it must install into `/var/jb`).
 
-### Experimental: an ephemeral "rootful" overlay (`HACKIOS_ROOTFUL=1`)
+### An ephemeral "rootful" overlay (on by default)
 
 HackiOS is **rootless** because its root filesystem is a read-only APFS RAM disk — the kernel's APFS is a
 reader, so `/` genuinely cannot be written (the only writable filesystem is the memory one on `/private/var`,
-which is where the `/var/jb` prefix lives). A true rootful jailbreak is therefore impossible here.
+which is where the `/var/jb` prefix lives). A true rootful jailbreak — one that rewrites the system files on
+disk — is therefore impossible here.
 
-What *is* possible is an **ephemeral overlay**: a small helper (`rootful/rootful.c`) mounts a writable memory
-filesystem (`ramfs`) as a **union** over the system directories at boot, so a file *created* in `/Applications`,
-`/Library`, … lands in memory while reads of what is already there fall through to the read-only root. Build
-with `HACKIOS_ROOTFUL=1` and it runs from the boot job list.
+What *is* possible is an **ephemeral overlay**, and it is now **on by default**: a small helper
+(`rootful/rootful.c`) mounts a writable memory filesystem (`ramfs`) as a **union** over the system directories
+at boot, so a file *created* in `/Applications`, `/Library`, `/usr`, `/bin` or `/sbin` lands in memory while
+reads of what is already there fall through to the read-only root. It runs from the boot job list; the boot
+log prints `rootful: writable overlay on <dir> (verified: created a file)` for each one.
 
 Caveats, by design:
 - **Ephemeral** — the overlay is memory, emptied on a cold boot (a snapshot keeps it), exactly like `/var/jb`.
 - **Add-only** — it cannot modify the existing read-only system files, only put new ones beside them (the
-  kernel can't rewrite APFS). You get uid 0 either way; rootless already covers almost every real use.
-- **Experimental** — `/Applications` and `/Library` are verified to boot cleanly; overlaying `/usr`, `/bin`
-  or `/sbin` is riskier (the dynamic linker and core tools live there). `HACKIOS_ROOTFUL_DIRS="/A /B"` sets
-  the list (default `"/Applications /Library"`).
+  kernel can't rewrite APFS). You get uid 0 either way; this just lets you write to the system paths too.
 
-To turn it on without changing the launcher, create **`/root/.hackios-env`** in the chroot with
-`HACKIOS_ROOTFUL=1` (that file is sourced by `hackios.sh`), then re-run step 3.
+The full set `/Applications /Library /usr /bin /sbin` was verified to boot cleanly (home screen, Settings and
+NewTerm all launch with it active). `HACKIOS_ROOTFUL_DIRS="/A /B"` overrides which directories it covers, and
+`HACKIOS_ROOTFUL=0` turns it off. To change either without editing the launcher, put the setting in
+**`/root/.hackios-env`** in the chroot (that file is sourced by `hackios.sh`), then re-run step 3.
 
 ### Snapshots: boot in seconds
 
@@ -192,7 +193,7 @@ instruction is translated in software (TCG). What helps:
 ## Scripts
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
-  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_ROOTFUL=1`, `HACKIOS_ROOTFUL_DIRS`).
+  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_ROOTFUL=0`, `HACKIOS_ROOTFUL_DIRS`).
 - `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.

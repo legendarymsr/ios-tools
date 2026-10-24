@@ -30,10 +30,11 @@
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
 #      HACKIOS_NEWTERM=0 (leave out the bundled NewTerm terminal app; needs the jailbreak; next build),
 #      NEWTERM_DEB=<path> (bundle this local NewTerm .deb instead of fetching it from Chariz),
-#      HACKIOS_ROOTFUL=1 (experimental: an ephemeral writable-root overlay -- a ramfs union over the
-#      system dirs so files can be created in /Applications, /Library, ... in memory; lost on a cold
-#      boot, cannot change existing read-only system files; next build), HACKIOS_ROOTFUL_DIRS="/A /B"
-#      (which directories the overlay covers; default "/Applications /Library"),
+#      HACKIOS_ROOTFUL=0 (turn OFF the ephemeral writable-root overlay, which is ON by default -- a
+#      ramfs union over the system dirs so files can be created in /Applications, /Library, /usr, /bin,
+#      /sbin in memory; lost on a cold boot, cannot change existing read-only system files; next build),
+#      HACKIOS_ROOTFUL_DIRS="/A /B" (which directories the overlay covers; default
+#      "/Applications /Library /usr /bin /sbin"),
 #      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
 #      HACKIOS_FBSCALE=2 (render the UI at 2x and upscale: less CPU per frame, a bit softer; it did not
 #      change the frame rate in testing, so the default is native 3).
@@ -239,9 +240,9 @@ JOBS
   # the ephemeral rootful overlay (opt-in): writable ramfs unions over the system directories, so
   # files can be created in /Applications, /Library, ... (in memory). Runs before the jailbreak prep
   # so the overlay is in place first. HACKIOS_ROOTFUL_DIRS overrides the default set.
-  if [ "${HACKIOS_ROOTFUL:-0}" != 0 ]; then
+  if [ "${HACKIOS_ROOTFUL:-1}" != 0 ]; then
     printf '# ios-tools: ephemeral rootful overlay (writable ramfs union over the system dirs)\n' >> "$f"
-    printf '/redwood/bin/rootful %s\n' "${HACKIOS_ROOTFUL_DIRS:-/Applications /Library}" >> "$f"
+    printf '/redwood/bin/rootful %s\n' "${HACKIOS_ROOTFUL_DIRS:-/Applications /Library /usr /bin /sbin}" >> "$f"
   fi
   if [ -d "$DIR/jb/root/var/jb" ]; then
     # the jailbreak, as HackiOS's rc.jobs.jb has it: the prefix's preparation once per boot (dpkg's
@@ -524,7 +525,7 @@ PYWALL
   # ios-tools). Only placed in the image when asked for; net_jobs runs it at boot. Removed from obj
   # otherwise so a later HACKIOS_ROOTFUL=0 build drops it from the image.
   rm -f userland/obj/rootful
-  if [ "${HACKIOS_ROOTFUL:-0}" != 0 ]; then
+  if [ "${HACKIOS_ROOTFUL:-1}" != 0 ]; then
     local rf
     for rf in "$HERE/rootful-arm64" "$HERE/rootful/rootful-arm64"; do
       if [ -f "$rf" ]; then cp -f "$rf" userland/obj/rootful; break; fi
