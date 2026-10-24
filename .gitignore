@@ -36,3 +36,5 @@ com.apple.recovery.boot/
 gradle-app.setting
 local.properties
 mac_hdd_ng.img
+
+*.zip
