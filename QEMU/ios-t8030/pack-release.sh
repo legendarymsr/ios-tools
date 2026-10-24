@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: NewTerm terminal app bundled on the home screen (HASHBANG's NewTerm 3, Apache-2.0)"
+ui_print "- v@VER@: NewTerm terminal bundled on the home screen (HASHBANG's NewTerm 3, Apache-2.0); v2.7.0 shipped a stale script and left it out"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
@@ -58,7 +58,8 @@ CUS
 sed -i "s/@VER@/${VER}/" "$STAGE/customize.sh"
 cp "$APK" "$STAGE/app/qemu-t8030-launcher.apk"
 # payload: the chroot installer and hackios.sh
-PAYLOAD=(hackios.sh timesync/timesync-arm64 setup-debian-chroot.sh xz-arm64 LICENSE-xz)
+PAYLOAD=(hackios.sh timesync/timesync-arm64 setup-debian-chroot.sh xz-arm64 LICENSE-xz \
+         ws.hbang.newterm3_iphoneos-arm64.deb NewTerm-NOTICE.md)
 for f in "${PAYLOAD[@]}"; do
   cp -a "$HERE/$f" "$STAGE/payload/"
 done

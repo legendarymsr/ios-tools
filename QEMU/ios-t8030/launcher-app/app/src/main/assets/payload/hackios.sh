@@ -28,6 +28,8 @@
 #      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
 #      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone),
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
+#      HACKIOS_NEWTERM=0 (leave out the bundled NewTerm terminal app; needs the jailbreak; next build),
+#      NEWTERM_DEB=<path> (bundle this local NewTerm .deb instead of fetching it from Chariz),
 #      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
 #      HACKIOS_FBSCALE=2 (render the UI at 2x and upscale: less CPU per frame, a bit softer; it did not
 #      change the frame rate in testing, so the default is native 3).
@@ -233,6 +235,197 @@ JOBS
   echo "$f"
 }
 
+# NewTerm (ios-tools): bundle HASHBANG's NewTerm 3 terminal into the jailbreak prefix, the way
+# mk-jb.sh bundles Sileo -- unpack the rootless (/var/jb) deb into jb/root and pull its runtime
+# dependencies (a shell, coreutils, ncurses terminfo, system-cmds) from Procursus that the bootstrap
+# does not already carry, so a working terminal is on the home screen at first boot without Sileo
+# (whose "firmware" resolver quirk blocks installing it on-device). NewTerm is Apache-2.0
+# (github.com/hbang/NewTerm); its deb is fetched from Chariz (repo.chariz.com, the repo Sileo itself
+# would use), or taken from $NEWTERM_DEB if that points at a local .deb. Never fatal: any failure
+# just leaves NewTerm out, like the wallpaper. Returns 0 if NewTerm is present in the prefix, 1 if not.
+PROCURSUS_MIRROR=https://apt.procurs.us
+PROCURSUS_SUITE=1800
+CHARIZ_REPO=https://repo.chariz.com
+# extract a .deb's data tree into a root (dpkg-deb if present -- it is, in the Debian chroot -- else ar+tar)
+deb_extract() {
+  local deb="$1" dest="$2"
+  if command -v dpkg-deb >/dev/null 2>&1; then
+    dpkg-deb -x "$deb" "$dest" && return 0
+  fi
+  local t; t=$(mktemp -d)
+  ( cd "$t" && ar x "$deb" ) || { rm -rf "$t"; return 1; }
+  local data; data=$(ls "$t"/data.tar.* 2>/dev/null | head -1) || { rm -rf "$t"; return 1; }
+  case "$data" in
+    *.xz)   xz -dc "$data"   | tar -x -C "$dest" ;;
+    *.lzma) xz -dc "$data"   | tar -x -C "$dest" ;;
+    *.zst)  zstd -dc "$data" | tar -x -C "$dest" ;;
+    *.gz)   gzip -dc "$data" | tar -x -C "$dest" ;;
+    *.bz2)  bzip2 -dc "$data"| tar -x -C "$dest" ;;
+    *)      tar -xf "$data" -C "$dest" ;;
+  esac
+  local rc=$?; rm -rf "$t"; return $rc
+}
+# a field from a .deb's control
+deb_field() { dpkg-deb -f "$1" "$2" 2>/dev/null; }
+# append a "Status: install ok installed" stanza for a package to the prefix's dpkg database, so apt
+# and Sileo see it installed (and do not offer to reinstall it) -- as mk-jb.sh does for Sileo/ElleKit
+dpkg_record() { # dpkg_record STATUS_FILE PACKAGE VERSION [ARCH] [DEPENDS]
+  local st="$1" pkg="$2" ver="$3" arch="${4:-iphoneos-arm64}" dep="${5:-}"
+  grep -q "^Package: $pkg\$" "$st" 2>/dev/null && return 0
+  { printf 'Package: %s\nStatus: install ok installed\nArchitecture: %s\nVersion: %s\n' "$pkg" "$arch" "$ver"
+    [ -n "$dep" ] && printf 'Depends: %s\n' "$dep"
+    printf '\n'; } >> "$st"
+}
+bundle_newterm() {
+  local root="$DIR/jb/root"
+  [ -d "$root/var/jb" ] || return 1
+  local app="$root/var/jb/Applications/NewTerm.app"
+  [ -f "$app/NewTerm" ] && return 0   # already bundled
+  local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
+  # 1. obtain the NewTerm deb -- the bundled one (shipped next to this script, or $NEWTERM_DEB),
+  #    else the arm64 (/var/jb) build from Chariz. The bundled deb makes the build self-contained
+  #    (no network for it) and pins the exact tested build.
+  local deb="" c
+  for c in "${NEWTERM_DEB:-}" "$HERE"/ws.hbang.newterm3*.deb "$HERE"/newterm/ws.hbang.newterm3*.deb; do
+    if [ -n "$c" ] && [ -f "$c" ]; then deb="$c"; break; fi
+  done
+  if [ -n "$deb" ]; then
+    log "NewTerm: using bundled $deb"
+  else
+    log "NewTerm: resolving ws.hbang.newterm3 (arm64) from $CHARIZ_REPO"
+    if ! curl -fsSL --retry 3 -o "$tmp/ch.xz" "$CHARIZ_REPO/Packages.xz"; then
+      log "NewTerm: could not fetch the Chariz package index - left out"; return 1
+    fi
+    local fn
+    fn=$(xz -dc "$tmp/ch.xz" | python3 -c '
+import sys
+cur={}; best=None
+def flush():
+    global best
+    if cur.get("Package")=="ws.hbang.newterm3" and cur.get("Architecture")=="iphoneos-arm64":
+        best=cur.get("Filename")
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if not line: flush(); cur={}; continue
+    if line[:1] in " \t": continue
+    k,_,v=line.partition(":"); cur[k.strip()]=v.strip()
+flush()
+print(best or "")')
+    if [ -z "$fn" ]; then log "NewTerm: not in the Chariz index - left out"; return 1; fi
+    if ! curl -fsSL --retry 3 -o "$tmp/newterm.deb" "$CHARIZ_REPO/$fn"; then
+      log "NewTerm: deb download failed - left out"; return 1
+    fi
+    deb="$tmp/newterm.deb"
+  fi
+  # it must be the rootless (/var/jb) build, or it would scatter into read-only system paths
+  mkdir -p "$tmp/nt"
+  deb_extract "$deb" "$tmp/nt" || { log "NewTerm: could not read the deb - left out"; return 1; }
+  if [ ! -d "$tmp/nt/var/jb/Applications/NewTerm.app" ]; then
+    log "NewTerm: this deb is not the rootless (/var/jb) build - left out (need the arm64 one)"; return 1
+  fi
+  local st="$root/var/jb/Library/dpkg/status"
+  # 2. runtime dependencies from Procursus: resolve NewTerm's Depends closure, minus whatever the
+  #    bootstrap already installed (its dpkg status), and download the missing ones
+  log "NewTerm: resolving runtime dependencies from Procursus (suite $PROCURSUS_SUITE)"
+  local pidx="$tmp/proc.xz"
+  if curl -fsSL --retry 3 -o "$pidx" "$PROCURSUS_MIRROR/dists/$PROCURSUS_SUITE/main/binary-iphoneos-arm64/Packages.xz"; then
+    xz -dc "$pidx" | python3 -c '
+import sys
+status_path=sys.argv[1]
+# stdin: Procursus Packages (plain). argv[1]: prefix dpkg status (already-installed).
+pkgs={}; provides={}
+cur={}
+def flush(d):
+    n=d.get("Package")
+    if not n: return
+    pkgs[n]=d
+    for pv in (d.get("Provides","") or "").replace(" ","").split(","):
+        pv=pv.split("(")[0]
+        if pv: provides.setdefault(pv,n)
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if not line: flush(cur); cur={}; continue
+    if line[:1] in " \t": continue
+    k,_,v=line.partition(":"); cur[k.strip()]=v.strip()
+flush(cur)
+# already installed (names + their Provides) from the prefix status
+have=set()
+try:
+    d={}
+    for line in open(status_path,encoding="utf-8",errors="replace"):
+        line=line.rstrip("\n")
+        if not line:
+            n=d.get("Package")
+            if n and "install ok installed" in d.get("Status",""):
+                have.add(n)
+                for pv in (d.get("Provides","") or "").replace(" ","").split(","):
+                    pv=pv.split("(")[0]
+                    if pv: have.add(pv)
+            d={}; continue
+        if line[:1] in " \t": continue
+        k,_,v=line.partition(":"); d[k.strip()]=v.strip()
+except FileNotFoundError:
+    pass
+def dep_names(s):
+    out=[]
+    for clause in (s or "").split(","):
+        clause=clause.strip()
+        if not clause: continue
+        # first alternative that exists as a real package or a provider
+        for alt in clause.split("|"):
+            name=alt.strip().split(" ")[0].split("(")[0].strip()
+            if not name: continue
+            if name in pkgs or name in provides: out.append(name); break
+        else:
+            name=clause.split("|")[0].strip().split(" ")[0].split("(")[0].strip()
+            if name: out.append(name)
+    return out
+# NewTerm 3 needs: a shell, coreutils, ncurses (terminfo), system-cmds. Seed concretely so the
+# shell choice is zsh+bash and ncurses pulls the terminfo data too.
+seed=["coreutils","system-cmds","zsh","bash","ncurses-bin","ncurses-term"]
+if "ncurses" in provides: seed.append(provides["ncurses"])   # libncursesw6
+want=[]; seen=set()
+def resolve(name):
+    if name in seen: return
+    seen.add(name)
+    real=name if name in pkgs else provides.get(name)
+    if not real or real in have or real not in pkgs: return
+    # recurse into its deps first, so dependencies are unpacked before dependents
+    for dn in dep_names(pkgs[real].get("Depends","")):
+        resolve(dn)
+    if real not in want:
+        want.append(real)
+for s in seed: resolve(s)
+for n in want:
+    d=pkgs[n]
+    print("\t".join([d.get("Filename",""), n, d.get("Version",""),
+                     d.get("Architecture","iphoneos-arm64"), d.get("Depends","")]))
+' "$st" > "$tmp/deps.tsv" || true
+    local n=0
+    while IFS=$'\t' read -r fn pkg ver arch dep; do
+      [ -n "$fn" ] || continue
+      if curl -fsSL --retry 3 -o "$tmp/dep.deb" "$PROCURSUS_MIRROR/$fn"; then
+        if deb_extract "$tmp/dep.deb" "$root"; then
+          dpkg_record "$st" "$pkg" "$ver" "$arch" "$dep"; n=$((n+1))
+        fi
+      else
+        log "NewTerm: dependency $pkg could not be downloaded (continuing)"
+      fi
+    done < "$tmp/deps.tsv"
+    log "NewTerm: installed $n dependency package(s) the bootstrap lacked"
+  else
+    log "NewTerm: Procursus index unavailable - installing the app without extra deps (the bootstrap's shell is used)"
+  fi
+  # 3. lay NewTerm.app into the prefix (it already targets /var/jb) and record it in dpkg
+  cp -a "$tmp/nt/." "$root/"
+  local ntver; ntver=$(deb_field "$deb" Version); [ -n "$ntver" ] || ntver="3.0~beta1"
+  local ntdep; ntdep=$(deb_field "$deb" Depends)
+  dpkg_record "$st" ws.hbang.newterm3 "$ntver" iphoneos-arm64 "$ntdep"
+  log "NewTerm: bundled ws.hbang.newterm3 $ntver into the prefix (home-screen app)"
+  return 0
+}
+
 do_build() {
   credit
   [ -f "$DIR/common/build.sh" ] && [ -d "$DIR/.userland.git" ] || die "not set up yet - run step 2 first"
@@ -259,10 +452,25 @@ do_build() {
   elif [ -d jb/root ]; then
     log "jailbreak left out (HACKIOS_JB=0)"; rm -rf jb/root
   fi
-  # their build remakes system.apfs only when its own inputs change: with the jailbreak added or taken
-  # out it has to be remade too (userland/.ios-tools-jb remembers what the image has)
+  # NewTerm (ios-tools): a terminal app on the home screen, bundled into the jailbreak prefix (needs
+  # the jailbreak). HACKIOS_NEWTERM=0 leaves it out. A terminal is only meaningful with the prefix's
+  # tools, so it rides on HACKIOS_JB.
+  local want_nt=off
+  if [ "$jb" = on ] && [ "${HACKIOS_NEWTERM:-1}" != 0 ]; then
+    if bundle_newterm; then want_nt=on; else log "NewTerm: not bundled (see above)"; fi
+  elif [ -d jb/root/var/jb/Applications/NewTerm.app ]; then
+    log "NewTerm left out (HACKIOS_NEWTERM=0 or no jailbreak): removing it from the prefix"
+    rm -rf jb/root/var/jb/Applications/NewTerm.app
+    sed -i '/^Package: ws\.hbang\.newterm3$/,/^$/d' jb/root/var/jb/Library/dpkg/status 2>/dev/null || true
+  fi
+  # their build remakes system.apfs only when its own inputs change: with the jailbreak (or NewTerm)
+  # added or taken out it has to be remade too (userland/.ios-tools-jb / .ios-tools-newterm remember
+  # what the image has)
   if [ "$(cat userland/.ios-tools-jb 2>/dev/null || echo off)" != "$jb" ]; then
     system=1; log "the system image is remade ($([ $jb = on ] && echo with || echo without) the jailbreak)"
+  fi
+  if [ "$(cat userland/.ios-tools-newterm 2>/dev/null || echo off)" != "$want_nt" ]; then
+    system=1; log "the system image is remade ($([ $want_nt = on ] && echo with || echo without) NewTerm)"
   fi
   # iOS's default wallpaper (ios-tools): the stock one (identifier 7400) is GPU-composited and comes up
   # a blank white screen without a GPU under QEMU; the "Stripe Black" (7395) is procedural, so the
@@ -303,6 +511,7 @@ PYWALL
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
     || die "the images were not built (see above)"
   echo "$jb" > userland/.ios-tools-jb
+  echo "$want_nt" > userland/.ios-tools-newterm
   echo "${want_wall:-stock}" > userland/.ios-tools-wallpaper
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
   log "build done - next: step 4 (boot)"

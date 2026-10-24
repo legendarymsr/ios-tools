@@ -20,9 +20,12 @@ public final class Steps {
         "for c in /sys/fs/cgroup /acct; do [ -w \"$c/cgroup.procs\" ] && echo $$ > \"$c/cgroup.procs\"; done 2>/dev/null; ";
 
     // The chroot runs the copy of hackios.sh in /root: refresh it from the app on every step.
+    // The bundled NewTerm deb (if present) rides along so the build can bundle it without a network
+    // fetch; the copy is best-effort so older payloads without it still work.
     static final String SYNC =
         "mkdir -p /data/local/debian/root && cp -f \"{P}\"/hackios.sh \"{P}\"/timesync-arm64 /data/local/debian/root/ "
-      + "&& chmod 0755 /data/local/debian/root/hackios.sh; ";
+      + "&& chmod 0755 /data/local/debian/root/hackios.sh; "
+      + "cp -f \"{P}\"/ws.hbang.newterm3_iphoneos-arm64.deb /data/local/debian/root/ 2>/dev/null; ";
 
     /** "Power off VM" button. */
     public static final String POWER_OFF =

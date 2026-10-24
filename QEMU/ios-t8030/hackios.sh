@@ -283,10 +283,15 @@ bundle_newterm() {
   [ -f "$app/NewTerm" ] && return 0   # already bundled
   local tmp; tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
-  # 1. obtain the NewTerm deb -- a local one if given, else the arm64 (/var/jb) build from Chariz
-  local deb=""
-  if [ -n "${NEWTERM_DEB:-}" ] && [ -f "$NEWTERM_DEB" ]; then
-    deb="$NEWTERM_DEB"; log "NewTerm: using $deb"
+  # 1. obtain the NewTerm deb -- the bundled one (shipped next to this script, or $NEWTERM_DEB),
+  #    else the arm64 (/var/jb) build from Chariz. The bundled deb makes the build self-contained
+  #    (no network for it) and pins the exact tested build.
+  local deb="" c
+  for c in "${NEWTERM_DEB:-}" "$HERE"/ws.hbang.newterm3*.deb "$HERE"/newterm/ws.hbang.newterm3*.deb; do
+    if [ -n "$c" ] && [ -f "$c" ]; then deb="$c"; break; fi
+  done
+  if [ -n "$deb" ]; then
+    log "NewTerm: using bundled $deb"
   else
     log "NewTerm: resolving ws.hbang.newterm3 (arm64) from $CHARIZ_REPO"
     if ! curl -fsSL --retry 3 -o "$tmp/ch.xz" "$CHARIZ_REPO/Packages.xz"; then
