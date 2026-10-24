@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.6.1.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.7.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -29,7 +29,7 @@ Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.6.1.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.7.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -82,6 +82,20 @@ system image. Every boot runs their `prep.sh` and refreshes the package lists.
   starts from the clean image again. Install what you want, then **Save iOS snapshot**: resuming the
   snapshot brings it all back.
 - `HACKIOS_JB=0` builds without the jailbreak.
+
+### NewTerm: a terminal on the home screen
+
+Step 3 also bundles **[NewTerm](https://github.com/hbang/NewTerm) 3** (HASHBANG Productions, Apache-2.0),
+a native iOS terminal, into the jailbreak prefix the same way Sileo is — it is on the second home-screen
+page and opens a real `zsh` shell with the usual command-line tools (the Procursus bootstrap already
+provides the shell, coreutils, ncurses and `system-cmds` it needs). The rootless (`/var/jb`) build is
+fetched from [Chariz](https://chariz.com/get/newterm-beta) at build time (the repo Sileo itself would use),
+so nothing third-party is committed here. This sidesteps installing it through Sileo on-device, which the
+Procursus `firmware` pseudo-package otherwise trips up.
+
+- `HACKIOS_NEWTERM=0` leaves NewTerm out (it needs the jailbreak, so it also goes with `HACKIOS_JB=0`).
+- `NEWTERM_DEB=<path>` bundles a local NewTerm `.deb` instead of fetching it (use the `iphoneos-arm64`,
+  i.e. rootless, build — it must install into `/var/jb`).
 
 ### Snapshots: boot in seconds
 
@@ -151,11 +165,12 @@ instruction is translated in software (TCG). What helps:
 - The home/lock background is black (the stock white wallpaper needs a GPU; see above). Widgets, blur and
   photo wallpapers still need the GPU and are blank. Apps (Safari, Settings, Notes …) draw normally.
 - Network: Safari and apps reach the internet through QEMU's user network (iOS gets 10.0.2.15).
+- **Sileo** and **NewTerm** (a terminal with a real `zsh` shell) are on the second home-screen page.
 
 ## Scripts
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
-  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`).
+  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`).
 - `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
