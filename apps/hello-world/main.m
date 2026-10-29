@@ -92,7 +92,7 @@ static NSString *rootRun(NSString *script) {
             @"set -e; B='%@'; "
             @"mkdir -p /var/jb/usr/local/bin /var/jb/dnfroot/var/lib/dnf/installed /var/jb/dnfroot/var/cache/dnf; "
             @"cp -f \"$B/fastfetch\" \"$B/rpm2cpio\" \"$B/dnf\" /var/jb/usr/local/bin/; "
-            @"chmod 755 /var/jb/usr/local/bin/fastfetch /var/jb/usr/local/bin/rpm2cpio /var/jb/usr/local/bin/dnf; "
+            @"chmod 755 /var/jb/usr/local/bin/fastfetch /var/jb/usr/local/bin/rpm2cpio /var/jb/usr/local/bin/rpm2cpio.py /var/jb/usr/local/bin/dnf; "
             @"echo fastfetch-ios-tools-native > /var/jb/dnfroot/var/lib/dnf/installed/fastfetch; "
             @"export PATH=/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:$PATH; "
             @"command -v curl >/dev/null || apt-get install -y curl cpio gzip xz-utils zstd 2>/dev/null || true; "
