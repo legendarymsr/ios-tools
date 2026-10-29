@@ -25,6 +25,7 @@
 #      puts the 2.5 GB system image high in RAM; the guest RAM is a file mapping, so the phone
 #      itself needs about 2.5-3 GB free), HACKIOS_NET=0 (no network; takes effect at the next build),
 #      HACKIOS_JOBS=<file> (the job list iOS runs at boot instead of ours; see net_jobs below),
+#      HACKIOS_VNC=<n> (VNC display number, default 0 = port 5900, for hosts where it is taken),
 #      HACKIOS_SNAPSHOT=0 (boot afresh even when a snapshot is saved), HACKIOS_TZ=<zone> (iOS's time
 #      zone, e.g. Europe/London; the launcher passes Android's persist.sys.timezone),
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
@@ -135,9 +136,25 @@ do_setup() {
   else
     # a plain checkout keeps setup.sh's skip-worktree marks, so the kernel repository's own
     # README.md, LICENSE and .gitignore in the shared tree are left alone
-    git --git-dir="$DIR/.userland.git" --work-tree="$DIR" -c advice.detachedHead=false \
-      checkout -q "$USERLAND_PIN" 2>/dev/null \
-      || log "WARNING: could not pin hackios-xnu-userland to ${USERLAND_PIN:0:7}; using what setup.sh checked out"
+    local ug=(git --git-dir="$DIR/.userland.git" --work-tree="$DIR" -c advice.detachedHead=false)
+    if ! "${ug[@]}" checkout -q "$USERLAND_PIN" 2>/dev/null; then
+      # hackios-xnu-userland was folded into the kernel repository on 2026-10-25 and its own
+      # history replaced by a pointer commit: the pinned commit now lives in the kernel
+      # repository's history, and the pointer shares README.md/LICENSE/.gitignore with the kernel
+      # tree. Fetch the pin from there, switch by force (reset --hard), give the kernel repository its own files
+      # back and keep the user space's copies out of the way (skip-worktree), as setup.sh does.
+      if ! git --git-dir="$DIR/.userland.git" cat-file -e "$USERLAND_PIN^{commit}" 2>/dev/null; then
+        log "fetching hackios-xnu-userland ${USERLAND_PIN:0:7} from the kernel repository (the user space moved there)"
+        git --git-dir="$DIR/.userland.git" fetch -q --depth 1 "$KERNEL_URL" "$USERLAND_PIN" || true
+      fi
+      rm -f "$DIR/.userland.git/index"   # its skip-worktree marks block a forced switch
+      if "${ug[@]}" reset -q --hard "$USERLAND_PIN" 2>/dev/null; then
+        "${ug[@]}" update-index --skip-worktree README.md LICENSE .gitignore 2>/dev/null || true
+        git -C "$DIR" checkout -q -- README.md LICENSE .gitignore 2>/dev/null || true
+      else
+        log "WARNING: could not pin hackios-xnu-userland to ${USERLAND_PIN:0:7}; using what setup.sh checked out"
+      fi
+    fi
   fi
   log "kernel repo at $(git -C "$DIR" rev-parse --short HEAD), userland repo at $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD)"
   log "setup done - next: step 3 (download iOS 16.5 + build the images)"
@@ -312,7 +329,7 @@ bundle_newterm() {
   local app="$root/var/jb/Applications/NewTerm.app"
   [ -f "$app/NewTerm" ] && return 0   # already bundled
   local tmp; tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'rm -rf "${tmp:-}"; trap - RETURN' RETURN
   # 1. obtain the NewTerm deb -- the bundled one (shipped next to this script, or $NEWTERM_DEB),
   #    else the arm64 (/var/jb) build from Chariz. The bundled deb makes the build self-contained
   #    (no network for it) and pins the exact tested build.
@@ -478,7 +495,7 @@ bundle_trollstore() {
   [ -d "$root/var/jb" ] || return 1
   local share="$root/var/jb/usr/share/ios-tools" lib="$root/var/jb/usr/libexec/ios-tools"
   local tmp; tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'rm -rf "${tmp:-}"; trap - RETURN' RETURN
   # 1. TrollHelper (rootless deb) -> /var/jb/Applications/TrollStorePersistenceHelper.app
   if [ ! -x "$root/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper" ]; then
     local deb="${TROLLHELPER_DEB:-}"
@@ -639,6 +656,7 @@ PYWALL
   fi
   # ours: keeps iOS's clock right after a snapshot is resumed (timesync/timesync.c in ios-tools)
   local ts
+  mkdir -p userland/obj   # a fresh tree has no obj/ until their build has run once
   for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
     if [ -f "$ts" ]; then cp -f "$ts" userland/obj/timesync; break; fi
   done
@@ -770,7 +788,7 @@ do_run() {
   fi
   if [ ${#extra[@]} = 0 ]; then
     log "booting iOS 16.5 under QEMU virt (TCG, ${HACKIOS_SMP:-4} vCPUs, ${HACKIOS_RAM_GB:-7} GB guest RAM, network=$net, session ${secs} s)"
-    log "display: VNC 127.0.0.1:5900 - the lock screen takes several minutes on a phone"
+    log "display: VNC 127.0.0.1:$((5900 + ${HACKIOS_VNC:-0})) - the lock screen takes several minutes on a phone"
     if qemu_ok_for_snapshots; then log "tip: once iOS is on the home screen, tap \"Save iOS snapshot\" so the next boot takes seconds"; fi
   fi
   log "touch: the pointer with the button held is a finger; swipe up from the bottom edge = home/unlock, from the left edge = back"
@@ -780,7 +798,7 @@ do_run() {
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} $(fbscale_arg) ${HACKIOS_CMDLINE:-}" \
-    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:0 "${extra[@]}" || true
+    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:"${HACKIOS_VNC:-0}" "${extra[@]}" || true
   wait
   if [ -f "$DIR/qemu/.snapshot-failed" ]; then
     rm -f "$DIR/qemu/.snapshot-failed" "$snap" "$snap.key"

@@ -50,7 +50,7 @@ mkdir -p /data/local/tmp/qemu-t8030
 cp -f "$MODPATH"/payload/* /data/local/tmp/qemu-t8030/ 2>/dev/null
 chmod 0755 /data/local/tmp/qemu-t8030/* 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/qemu-t8030"
-ui_print "- v@VER@: TrollStore (opa334) is installed in the jailbroken iOS at boot via TrollHelper, plus a Hello World app (HACKIOS_TROLLSTORE=0 to leave it out; rebuild in step 3)"
+ui_print "- v@VER@: setup works again after HackiOS moved its user space into the kernel repository; TrollStore + Hello World installed at boot (HACKIOS_TROLLSTORE=0 to leave out)"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done."
