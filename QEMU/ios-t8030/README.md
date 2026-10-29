@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.7.3.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.9.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -22,14 +22,14 @@ QEMU's own network. All credit for HackiOS goes to its authors. HackiOS is not a
 authorised or endorsed by Apple Inc.
 
 Nothing of HackiOS is copied into this repository: `hackios.sh` clones
-[hackios-xnu-kernel](https://github.com/oosexgang/hackios-xnu-kernel) (Apple Public Source License 2.0)
-and [hackios-xnu-userland](https://github.com/oosexgang/hackios-xnu-userland) (MIT) at pinned commits
+[hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) (kernel Apple Public Source License 2.0,
+user space MIT; the user space was folded into this one repository upstream on 2026-10-25) at a pinned commit
 into the Debian chroot (`/root/hackios`) and runs their own scripts. iOS 16.5 (20F66) comes from
-Apple's CDN through their `ios165/fetch.sh`, onto your phone only.
+Apple's CDN through their `sysimage/fetch.sh`, onto your phone only.
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.7.3.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.9.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
@@ -40,11 +40,12 @@ Needs about 14 GB free storage while building and about 3 GB free RAM while iOS 
    `/data/local/enter-debian.sh`; re-run any time to update it.
 2. **Install HackiOS** — `hackios.sh setup`: packages (QEMU for aarch64, UEFI firmware, gcc, clang/lld),
    7-Zip 24.09 from [ip7z/7zip](https://github.com/ip7z/7zip) (checksum-verified; Debian's 7-Zip is too
-   old to read APFS), both HackiOS repositories via their `common/setup.sh`.
-3. **Download iOS 16.5 + build images (long)** — `hackios.sh build`: `hackios.sh build`: their `ios165/fetch.sh`
+   old to read APFS), the HakiOS repository at its pinned commit (an old two-repository checkout is cleaned up).
+3. **Download iOS 16.5 + build images (long)** — `hackios.sh build`: their `sysimage/fetch.sh`
 (7.4 GB download, resumes if interrupted; about 14 GB free space needed while it runs), their loader
-built from source (`xnuloader/build.sh`, clang + lld), then `common/build.sh qemu-virt` with their
-prebuilt kernel and programs → `userland/root.apfs` and `userland/system.apfs` (2.5 GB). The boot job
+built from source (`xnuloader/build.sh`, clang + lld; lzfse is built for its device tree), then
+`PREBUILT=1 REST=1 userland/build.sh` with their prebuilt kernel and programs (our `timesync` and `rootful`
+go in through their `EXTRA`) → `userland/root.apfs` and `userland/system.apfs` (2.5 GB). The boot job
 list asks configd for DHCP on `en0` (`net_test dhcp en0`, as their `rc.jobs.net` does): under QEMU
 the virtio card has no IOKit object, so iOS does not configure it by itself. `HACKIOS_NET=0` builds
 without it; `HACKIOS_JOBS=<file>` uses one of their `rc.jobs.*` lists instead.
@@ -215,3 +216,11 @@ instruction is translated in software (TCG). What helps:
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
+
+## v2.9.0: current upstream HakiOS
+
+Pinned to hakios-xnu-kernel `8851317` (2026-10-26): `ios165/` → `sysimage/`, `common/build.sh` →
+`PREBUILT=1 REST=1 userland/build.sh`, boot job `com.hakios.demo`, `-device ramfb` display (required:
+SpringBoard does not start without it), `make` + `lz4` added to the packages. Upstream's own
+`qemu/run.sh` default is one vCPU (`QEMU_SMP=1`) with `tb-size=384`; `HACKIOS_SMP=1` matches it.
+TrollStore + Hello World stay on by default (`HACKIOS_TROLLSTORE=1`).

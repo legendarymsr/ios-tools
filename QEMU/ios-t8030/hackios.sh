@@ -7,7 +7,7 @@
 # hackios-xnu-kernel is APSL 2.0, hackios-xnu-userland is MIT. Nothing of theirs is copied into
 # ios-tools: this script clones their repositories at the commits pinned below and runs their own
 # scripts. HackiOS is not affiliated with, authorised or endorsed by Apple Inc.; no Apple files are
-# shipped -- their ios165/fetch.sh downloads iOS 16.5 from Apple's CDN onto this phone.
+# shipped -- their sysimage/fetch.sh downloads iOS 16.5 from Apple's CDN onto this phone.
 #
 #   hackios.sh setup    packages, 7-Zip 24.09 (APFS needs 7-Zip 23+), both HackiOS repositories
 #   hackios.sh build    download iOS 16.5 (7.4 GB, resumable), build HackiOS's loader and the
@@ -52,10 +52,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # create /root/.hackios-env in the chroot with the settings you want.
 # shellcheck disable=SC1091
 [ -f "$HERE/.hackios-env" ] && . "$HERE/.hackios-env" || true
-KERNEL_URL=https://github.com/oosexgang/hackios-xnu-kernel.git
-USERLAND_URL=https://github.com/oosexgang/hackios-xnu-userland.git
-KERNEL_PIN=8e61187098f2c26c5daee8f9f72b6416aa64b9ab     # 2026-10-22 "Add LICENSE"
-USERLAND_PIN=a79ff0772a3454fd1ef127e181e5b3bce6c9ce18   # 2026-10-22
+KERNEL_URL=https://github.com/oosexgang/hakios-xnu-kernel.git    # kernel + user space in one repository since 2026-10-25
+KERNEL_PIN=88513176b1e96ecf0b764cd62c6f4e6ac71345e3     # 2026-10-26 "Update README.md"
 SEVENZIP_VER=2409
 declare -A SEVENZIP_SHA=(
   [arm64]=fbe331697c9417bbc06fc92d3f4576dca6a5a1442fad7ae810304446a9153e2c
@@ -107,7 +105,7 @@ do_setup() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q || true
   apt-get install -y -q --no-install-recommends git python3 gcc libc6-dev curl ca-certificates xz-utils \
-    clang lld qemu-system-arm qemu-efi-aarch64 qemu-utils procps zstd binutils >/dev/null || die "apt-get install failed"
+    clang lld lz4 make qemu-system-arm qemu-efi-aarch64 qemu-utils procps zstd binutils >/dev/null || die "apt-get install failed"
   # snapshots (hackios.sh save) need QEMU 8.2+, which saves the ramfb display; bookworm has 7.2,
   # bookworm-backports has trixie's QEMU 10.0 (no speed difference measured, only the snapshots)
   if ! qemu_ok_for_snapshots && grep -q '^VERSION_CODENAME=bookworm' /etc/os-release 2>/dev/null; then
@@ -128,35 +126,13 @@ do_setup() {
     git init -q "$DIR" && git -C "$DIR" remote add origin "$KERNEL_URL"
   fi
   checkout "$DIR" "$KERNEL_URL" "$KERNEL_PIN"
-  # HackiOS's own setup clones hackios-xnu-userland into the same tree (git dir .userland.git)
-  ( cd "$DIR" && USERLAND_URL="$USERLAND_URL" bash common/setup.sh ) | grep -E '^setup:|missing' || true
-  [ -d "$DIR/.userland.git" ] || die "common/setup.sh did not check out hackios-xnu-userland"
-  if [ "${HACKIOS_REF:-pinned}" = latest ]; then
-    git --git-dir="$DIR/.userland.git" --work-tree="$DIR" pull -q --ff-only || true
-  else
-    # a plain checkout keeps setup.sh's skip-worktree marks, so the kernel repository's own
-    # README.md, LICENSE and .gitignore in the shared tree are left alone
-    local ug=(git --git-dir="$DIR/.userland.git" --work-tree="$DIR" -c advice.detachedHead=false)
-    if ! "${ug[@]}" checkout -q "$USERLAND_PIN" 2>/dev/null; then
-      # hackios-xnu-userland was folded into the kernel repository on 2026-10-25 and its own
-      # history replaced by a pointer commit: the pinned commit now lives in the kernel
-      # repository's history, and the pointer shares README.md/LICENSE/.gitignore with the kernel
-      # tree. Fetch the pin from there, switch by force (reset --hard), give the kernel repository its own files
-      # back and keep the user space's copies out of the way (skip-worktree), as setup.sh does.
-      if ! git --git-dir="$DIR/.userland.git" cat-file -e "$USERLAND_PIN^{commit}" 2>/dev/null; then
-        log "fetching hackios-xnu-userland ${USERLAND_PIN:0:7} from the kernel repository (the user space moved there)"
-        git --git-dir="$DIR/.userland.git" fetch -q --depth 1 "$KERNEL_URL" "$USERLAND_PIN" || true
-      fi
-      rm -f "$DIR/.userland.git/index"   # its skip-worktree marks block a forced switch
-      if "${ug[@]}" reset -q --hard "$USERLAND_PIN" 2>/dev/null; then
-        "${ug[@]}" update-index --skip-worktree README.md LICENSE .gitignore 2>/dev/null || true
-        git -C "$DIR" checkout -q -- README.md LICENSE .gitignore 2>/dev/null || true
-      else
-        log "WARNING: could not pin hackios-xnu-userland to ${USERLAND_PIN:0:7}; using what setup.sh checked out"
-      fi
-    fi
+  # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
+  if [ -d "$DIR/.userland.git" ]; then
+    log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
+    rm -rf "$DIR/.userland.git" "$DIR/ios165" "$DIR/common"
+    git -C "$DIR" reset -q --hard && git -C "$DIR" clean -qfd -e sysimage -e jb -e qemu/hackios.snapshot\* || true
   fi
-  log "kernel repo at $(git -C "$DIR" rev-parse --short HEAD), userland repo at $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD)"
+  log "HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD)"
   log "setup done - next: step 3 (download iOS 16.5 + build the images)"
 }
 
@@ -185,16 +161,8 @@ import pathlib, sys
 d = pathlib.Path(sys.argv[1])
 fixes = [
   ("userland/build.sh",
-   "\tcp obj/hello_dyn obj/svc_test obj/surf_test obj/drawable_test obj/rwtouch obj/mg_test root/bin/\n",
-   "\tfor t in hello_dyn svc_test surf_test drawable_test rwtouch mg_test; do [ -f obj/$t ] && cp obj/$t root/bin/ || true; done\n"),
-  ("userland/build.sh",
    "zone=$(timedatectl show -p Timezone --value 2>/dev/null); ",
    "zone=$(timedatectl show -p Timezone --value 2>/dev/null || true); "),
-  ("userland/mkjobs.py",
-   "        for name in ('RWA_PACKED16',):\n            if os.environ.get(name):\n"
-   "                job.setdefault('EnvironmentVariables', {})[name] = os.environ[name]\n        if label in oslog:",
-   "        for var in ('RWA_PACKED16',):\n            if os.environ.get(var):\n"
-   "                job.setdefault('EnvironmentVariables', {})[var] = os.environ[var]\n        if label in oslog:"),
   ("qemu/run.sh",
    "-drive file=fat:rw:esp,format=raw,if=virtio ",
    "-drive file=fat:${QEMU_ESP_RW-rw:}esp,format=raw,if=virtio${QEMU_ESP_RO:+,readonly=on} "),
@@ -204,14 +172,6 @@ fixes = [
   ("userland/build.sh",
    "zone=${zone:-UTC}",
    "zone=${zone:-${HACKIOS_TZ:-UTC}}"),
-  ("userland/build.sh",
-   "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n",
-   "\t[ -f obj/cow_test ] && cp obj/cow_test root/bin/\n"
-   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n"),
-  ("userland/build.sh",
-   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n",
-   "\t[ -f obj/timesync ] && cp obj/timesync root/bin/        # ios-tools hackios.sh: the clock after a snapshot\n"
-   "\t[ -f obj/rootful ] && cp obj/rootful root/bin/          # ios-tools hackios.sh: the ephemeral rootful overlay helper\n"),
   ("qemu/run-ios.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
@@ -246,7 +206,7 @@ for f, old, new in fixes:
 PYFIX
 }
 
-# What iOS runs at boot (HackiOS's launchd job com.redwood.demo). QEMU's virtio network card (en0)
+# What iOS runs at boot (HackiOS's launchd job com.hakios.demo). QEMU's virtio network card (en0)
 # has no IOKit object, so configd never sets it up by itself; HackiOS's net_test asks configd's
 # IPConfiguration for DHCP on en0 (as their rc.jobs.net does) and QEMU's user network answers.
 net_jobs() {
@@ -271,7 +231,7 @@ JOBS
     # "firmware", Sileo registered with LaunchServices), then fresh package lists for Sileo and apt
     cat >> "$f" <<'JOBS'
 /var/jb/bin/sh /var/jb/prep.sh
-/redwood/bin/net_test resolve apt.procurs.us
+/redwood/bin/net_test waitaddr en0 60 resolve apt.procurs.us
 /var/jb/usr/bin/apt-get update
 JOBS
     # TrollStore (ios-tools): install/refresh it via TrollHelper's root helper once iOS is up
@@ -574,16 +534,26 @@ unbundle_trollstore() {
 
 do_build() {
   credit
-  [ -f "$DIR/common/build.sh" ] && [ -d "$DIR/.userland.git" ] || die "not set up yet - run step 2 first"
+  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/fetch.sh" ] || die "not set up yet (or the old layout) - run step 2 first"
   command -v 7z >/dev/null || die "7z missing - run step 2 first"
   cd "$DIR"
-  if [ ! -f ios165/.done-rootfs ] || [ ! -f ios165/.done-cryptex ] || [ ! -f ios165/.done-cryptex-app ]; then
+  if [ ! -f sysimage/.done-rootfs ] || [ ! -f sysimage/.done-cryptex ] || [ ! -f sysimage/.done-cryptex-app ]; then
     log "downloading iOS 16.5 (20F66) from Apple's CDN and extracting it (7.4 GB, resumes if interrupted)"
-    bash ios165/fetch.sh
+    bash sysimage/fetch.sh
   else
     log "iOS 16.5 files already extracted"
   fi
   fix_checkout
+  # their xnuloader/mkidentity.sh builds lzfse with `make lzfse`, a target lzfse's Makefile does not
+  # have; build it with the default target into the place mkidentity.sh looks first
+  if ! command -v lzfse >/dev/null && [ ! -x "$DIR/xnu-deps/host/bin/lzfse" ]; then
+    log "building lzfse (BSD, github.com/lzfse/lzfse) for the loader's device tree"
+    local lz; lz=$(mktemp -d)
+    git clone -q --depth 1 https://github.com/lzfse/lzfse "$lz/lzfse" && make -s -C "$lz/lzfse" >/dev/null \
+      && mkdir -p "$DIR/xnu-deps/host/bin" && cp "$lz/lzfse/build/bin/lzfse" "$DIR/xnu-deps/host/bin/" \
+      || log "WARNING: lzfse did not build"
+    rm -rf "$lz"
+  fi
   log "building HackiOS's loader (xnuloader/loader.efi)"
   bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
   # the jailbreak, HackiOS's own: tools/mk-jb.sh fetches the Procursus rootless bootstrap, Sileo and
@@ -637,7 +607,7 @@ do_build() {
   # keeps iOS's stock default. A photo cannot be a wallpaper here: every wallpaper type iOS 16.5 ships
   # (Bokeh, the stripes, LayeredAnimation) is procedural, and a raster "poster" needs the GPU.
   local want_wall=stripe-black; [ "${HACKIOS_WALLPAPER:-1}" = 0 ] && want_wall=stock
-  local dwp=ios165/rootfs/Library/Wallpaper/DefaultWallpapers~iphone.plist
+  local dwp=sysimage/rootfs/Library/Wallpaper/DefaultWallpapers~iphone.plist
   if [ -f "$dwp" ]; then
     [ -f "$dwp.ios-tools-orig" ] || cp "$dwp" "$dwp.ios-tools-orig"
     python3 - "$dwp" "$want_wall" <<'PYWALL'
@@ -654,31 +624,29 @@ PYWALL
       system=1; log "wallpaper: $want_wall (the system image is remade)"
     fi
   fi
-  # ours: keeps iOS's clock right after a snapshot is resumed (timesync/timesync.c in ios-tools)
-  local ts
-  mkdir -p userland/obj   # a fresh tree has no obj/ until their build has run once
+  # ours, into /redwood/bin through their build's EXTRA: timesync (keeps iOS's clock right after a
+  # snapshot is resumed, timesync/timesync.c) and, unless HACKIOS_ROOTFUL=0, the ephemeral rootful
+  # overlay helper (rootful/rootful.c). EXTRA copies by file name, so they are staged under their names.
+  local xdir="$DIR/userland/obj/ios-tools" extra="" ts rf
+  rm -rf "$xdir"; mkdir -p "$xdir"
   for ts in "$HERE/timesync-arm64" "$HERE/timesync/timesync-arm64"; do
-    if [ -f "$ts" ]; then cp -f "$ts" userland/obj/timesync; break; fi
+    if [ -f "$ts" ]; then cp -f "$ts" "$xdir/timesync"; extra="$extra $xdir/timesync"; break; fi
   done
-  # ours (opt-in, HACKIOS_ROOTFUL=1): the ephemeral rootful overlay helper (rootful/rootful.c in
-  # ios-tools). Only placed in the image when asked for; net_jobs runs it at boot. Removed from obj
-  # otherwise so a later HACKIOS_ROOTFUL=0 build drops it from the image.
-  rm -f userland/obj/rootful
   if [ "${HACKIOS_ROOTFUL:-1}" != 0 ]; then
-    local rf
     for rf in "$HERE/rootful-arm64" "$HERE/rootful/rootful-arm64"; do
-      if [ -f "$rf" ]; then cp -f "$rf" userland/obj/rootful; break; fi
+      if [ -f "$rf" ]; then cp -f "$rf" "$xdir/rootful"; extra="$extra $xdir/rootful"; break; fi
     done
-    [ -f userland/obj/rootful ] || log "rootful: HACKIOS_ROOTFUL=1 but rootful-arm64 not found - overlay left out"
+    [ -f "$xdir/rootful" ] || log "rootful: rootful-arm64 not found - overlay left out"
   fi
   # iOS's time zone: Android's (the launcher passes it), checked against the zones iOS has
-  if [ -n "${HACKIOS_TZ:-}" ] && [ ! -e "ios165/rootfs/usr/share/zoneinfo.default/$HACKIOS_TZ" ]; then
+  if [ -n "${HACKIOS_TZ:-}" ] && [ ! -e "sysimage/rootfs/usr/share/zoneinfo.default/$HACKIOS_TZ" ]; then
     log "time zone $HACKIOS_TZ is not one iOS has: UTC"; unset HACKIOS_TZ
   fi
   if [ -n "${HACKIOS_TZ:-}" ]; then export HACKIOS_TZ; log "time zone: $HACKIOS_TZ"; fi
   local jobs; jobs=$(net_jobs)
   log "building the images (HackiOS's prebuilt kernel and programs; boot jobs: $(basename "$jobs"))"
-  SKIP="kernel loader boot" PREBUILT=1 RC_JOBS="$jobs" SYSTEM=$system bash common/build.sh qemu-virt
+  ( cd userland && PREBUILT=1 REST=1 RC_JOBS="$jobs" SYSTEM=$system EXTRA="${extra# }" \
+      bash build.sh ) || die "their image build failed (see above)"
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
     || die "the images were not built (see above)"
   echo "$jb" > userland/.ios-tools-jb
@@ -844,7 +812,7 @@ do_stop() {
 do_status() {
   credit
   [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (step 2)"
-  [ -f "$DIR/ios165/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
+  [ -f "$DIR/sysimage/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
   [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (step 3)"
   [ -f "$(snap_file)" ] && log "snapshot: saved $(date -r "$(snap_file)" '+%Y-%m-%d %H:%M'), $(du -h "$(snap_file)" | cut -f1)" || log "snapshot: none"
   [ -n "$(qemu_pids)" ] && log "running (pid $(qemu_pids | tr '\n' ' '))" || log "not running"
