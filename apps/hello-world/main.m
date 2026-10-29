@@ -91,7 +91,7 @@ static NSString *rootRun(NSString *script) {
         NSString *setup = [NSString stringWithFormat:
             @"set -e; B='%@'; "
             @"mkdir -p /var/jb/usr/local/bin /var/jb/dnfroot/var/lib/dnf/installed /var/jb/dnfroot/var/cache/dnf; "
-            @"cp -f \"$B/fastfetch\" \"$B/rpm2cpio\" \"$B/dnf\" /var/jb/usr/local/bin/; "
+            @"cp -f \"$B/fastfetch\" \"$B/rpm2cpio\" \"$B/rpm2cpio.py\" \"$B/dnf\" /var/jb/usr/local/bin/; "
             @"chmod 755 /var/jb/usr/local/bin/fastfetch /var/jb/usr/local/bin/rpm2cpio /var/jb/usr/local/bin/rpm2cpio.py /var/jb/usr/local/bin/dnf; "
             @"echo fastfetch-ios-tools-native > /var/jb/dnfroot/var/lib/dnf/installed/fastfetch; "
             @"export PATH=/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:$PATH; "
