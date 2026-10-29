@@ -97,6 +97,23 @@ Procursus `firmware` pseudo-package otherwise trips up.
 - `NEWTERM_DEB=<path>` bundles a local NewTerm `.deb` instead of fetching it (use the `iphoneos-arm64`,
   i.e. rootless, build — it must install into `/var/jb`).
 
+### TrollStore (and a Hello World app)
+
+Step 3 also stages **[TrollStore](https://github.com/opa334/TrollStore)** (opa334, MIT) the way it is
+installed on a jailbroken iOS 16 device: through **TrollHelper** (`com.opa334.trollstorehelper`, the rootless
+`iphoneos-arm64` deb). Both TrollHelper's deb and `TrollStore.tar` are downloaded from TrollStore's own GitHub
+releases at build time (latest, or `TROLLSTORE_VERSION=<tag>`); ios-tools does not ship them. At boot a
+background job (`/var/jb/usr/libexec/ios-tools/trollstore-boot.sh`, log in `/var/tmp/ios-tools-trollstore.log`)
+waits for iOS to come up and runs TrollHelper's root helper `trollstorehelper install-trollstore TrollStore.tar`
+(or `refresh-all` if TrollStore is already there), then has it install the staged apps -- by default the
+ios-tools **Hello World** app ([`apps/hello-world`](../../apps/hello-world), released as `HelloWorld.tipa`).
+"TrollStore Helper" is also on the home screen to (re)install TrollStore by hand.
+
+- `HACKIOS_TROLLSTORE=0` leaves TrollStore out (it needs the jailbreak, so it also goes with `HACKIOS_JB=0`).
+- `HACKIOS_TIPAS="<path-or-url> ..."` chooses which `.tipa`/`.ipa` files are installed at boot (`none` for none).
+- `TROLLSTORE_TAR=<path>` / `TROLLHELPER_DEB=<path>` use local files instead of downloading.
+- The boot job is part of ios-tools' job list, so it does not run with `HACKIOS_NET=0` or a custom `HACKIOS_JOBS`.
+
 ### An ephemeral "rootful" overlay (on by default)
 
 HackiOS is **rootless** because its root filesystem is a read-only APFS RAM disk — the kernel's APFS is a
@@ -193,7 +210,7 @@ instruction is translated in software (TCG). What helps:
 ## Scripts
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
-  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_ROOTFUL=0`, `HACKIOS_ROOTFUL_DIRS`).
+  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_TROLLSTORE=0`, `TROLLSTORE_VERSION`, `HACKIOS_TIPAS`, `HACKIOS_ROOTFUL=0`, `HACKIOS_ROOTFUL_DIRS`).
 - `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.

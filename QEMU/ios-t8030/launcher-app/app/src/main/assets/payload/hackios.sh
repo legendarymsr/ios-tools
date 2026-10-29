@@ -30,6 +30,11 @@
 #      HACKIOS_JB=0 (no jailbreak: leave out HackiOS's Procursus + Sileo prefix; next build),
 #      HACKIOS_NEWTERM=0 (leave out the bundled NewTerm terminal app; needs the jailbreak; next build),
 #      NEWTERM_DEB=<path> (bundle this local NewTerm .deb instead of fetching it from Chariz),
+#      HACKIOS_TROLLSTORE=0 (leave out TrollStore; needs the jailbreak; next build),
+#      TROLLSTORE_VERSION=<tag> (opa334/TrollStore release to fetch, default the latest),
+#      TROLLSTORE_TAR=<path> / TROLLHELPER_DEB=<path> (use these local files instead of downloading),
+#      HACKIOS_TIPAS="<path-or-url> ..." (.tipa/.ipa files TrollStore installs at boot; default the
+#      ios-tools Hello World app; HACKIOS_TIPAS=none for none),
 #      HACKIOS_ROOTFUL=0 (turn OFF the ephemeral writable-root overlay, which is ON by default -- a
 #      ramfs union over the system dirs so files can be created in /Applications, /Library, /usr, /bin,
 #      /sbin in memory; lost on a cold boot, cannot change existing read-only system files; next build),
@@ -252,6 +257,10 @@ JOBS
 /redwood/bin/net_test resolve apt.procurs.us
 /var/jb/usr/bin/apt-get update
 JOBS
+    # TrollStore (ios-tools): install/refresh it via TrollHelper's root helper once iOS is up
+    if [ -f "$DIR/jb/root/var/jb/usr/libexec/ios-tools/trollstore-boot.sh" ]; then
+      printf '/var/jb/bin/sh /var/jb/usr/libexec/ios-tools/trollstore-boot.sh &\n' >> "$f"
+    fi
   fi
   echo "$f"
 }
@@ -447,6 +456,105 @@ for n in want:
   return 0
 }
 
+# TrollStore (ios-tools): opa334's TrollStore, installed the way it is on a jailbroken iOS 16 device
+# -- through TrollHelper (com.opa334.trollstorehelper, the rootless /var/jb deb from TrollStore's own
+# GitHub releases), whose bundled root helper `trollstorehelper install-trollstore TrollStore.tar`
+# puts TrollStore.app into /var/containers/Bundle/Application and registers it as a system app.
+# At build time both release files are downloaded (never committed / redistributed by ios-tools)
+# and laid into the jailbreak prefix with a small boot script; at boot the script waits for iOS to
+# come up, installs TrollStore if it is not there (or refreshes its registrations if it is), then
+# lets TrollStore install the .tipa files staged in $HACKIOS_TIPAS (default: the ios-tools Hello
+# World app). TrollHelper also sits on the home screen ("TrollStore Helper") to (re)install by hand.
+# Never fatal: any failure just leaves TrollStore out. Returns 0 if it is staged, 1 if not.
+TROLLSTORE_REPO=https://github.com/opa334/TrollStore
+HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.0/HelloWorld.tipa
+ts_fetch() { # ts_fetch ASSET DEST
+  local base="$TROLLSTORE_REPO/releases/latest/download"
+  [ -n "${TROLLSTORE_VERSION:-}" ] && base="$TROLLSTORE_REPO/releases/download/$TROLLSTORE_VERSION"
+  curl -fsSL --retry 3 -o "$2" "$base/$1"
+}
+bundle_trollstore() {
+  local root="$DIR/jb/root"
+  [ -d "$root/var/jb" ] || return 1
+  local share="$root/var/jb/usr/share/ios-tools" lib="$root/var/jb/usr/libexec/ios-tools"
+  local tmp; tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' RETURN
+  # 1. TrollHelper (rootless deb) -> /var/jb/Applications/TrollStorePersistenceHelper.app
+  if [ ! -x "$root/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper" ]; then
+    local deb="${TROLLHELPER_DEB:-}"
+    if [ -z "$deb" ] || [ ! -f "$deb" ]; then
+      deb="$tmp/trollhelper.deb"; local v=latest
+      log "TrollStore: fetching TrollHelper (iphoneos-arm64) from $TROLLSTORE_REPO releases (${TROLLSTORE_VERSION:-latest})"
+      # the asset name carries the version: resolve it from the release's tag
+      v=${TROLLSTORE_VERSION:-$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$TROLLSTORE_REPO/releases/latest" | sed 's#.*/tag/##')}
+      [ -n "$v" ] && ts_fetch "com.opa334.trollstorehelper_${v}_iphoneos-arm64.deb" "$deb" \
+        || { log "TrollStore: TrollHelper download failed - left out"; return 1; }
+    fi
+    mkdir -p "$tmp/th"
+    deb_extract "$deb" "$tmp/th" || { log "TrollStore: could not read the TrollHelper deb - left out"; return 1; }
+    [ -x "$tmp/th/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper" ] \
+      || { log "TrollStore: not the rootless TrollHelper deb - left out"; return 1; }
+    cp -a "$tmp/th/." "$root/"
+    dpkg_record "$root/var/jb/Library/dpkg/status" com.opa334.trollstorehelper \
+      "$(deb_field "$deb" Version || echo 0)" iphoneos-arm64
+  fi
+  # 2. TrollStore.tar (what install-trollstore unpacks)
+  mkdir -p "$share/tipa" "$lib"
+  if [ ! -s "$share/TrollStore.tar" ]; then
+    if [ -n "${TROLLSTORE_TAR:-}" ] && [ -f "$TROLLSTORE_TAR" ]; then cp -f "$TROLLSTORE_TAR" "$share/TrollStore.tar"
+    else
+      log "TrollStore: fetching TrollStore.tar"
+      ts_fetch TrollStore.tar "$share/TrollStore.tar" || { log "TrollStore: TrollStore.tar download failed - left out"; rm -f "$share/TrollStore.tar"; return 1; }
+    fi
+  fi
+  # 3. the apps TrollStore installs at boot
+  rm -f "$share/tipa/"*
+  local s i=0
+  for s in ${HACKIOS_TIPAS:-$HELLO_TIPA_URL}; do
+    [ "$s" = none ] && break
+    i=$((i+1)); local dst; dst="$share/tipa/$i-$(basename "${s%%\?*}")"
+    case "$s" in
+      http://*|https://*) curl -fsSL --retry 3 -o "$dst" "$s" || { log "TrollStore: could not fetch $s (skipped)"; rm -f "$dst"; } ;;
+      *) cp -f "$s" "$dst" 2>/dev/null || log "TrollStore: $s not found (skipped)" ;;
+    esac
+  done
+  # 4. the boot script (runs as root from the boot job list, in the background)
+  cat > "$lib/trollstore-boot.sh" <<'TSBOOT'
+#!/var/jb/bin/sh
+# ios-tools: install TrollStore via TrollHelper's root helper, then the staged .tipa apps
+export PATH=/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+H=/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper
+S=/var/jb/usr/share/ios-tools
+L=/var/tmp/ios-tools-trollstore.log
+exec >>"$L" 2>&1
+echo "== $(date) trollstore-boot"
+ts_app() { ls -d /var/containers/Bundle/Application/*/TrollStore.app 2>/dev/null | head -1; }
+# LaunchServices must be up before anything can be registered: retry for ~10 minutes
+n=0
+while [ $n -lt 40 ]; do
+  if [ -n "$(ts_app)" ]; then "$H" refresh-all && break
+  else "$H" install-trollstore "$S/TrollStore.tar" && [ -n "$(ts_app)" ] && break; fi
+  n=$((n+1)); sleep 15
+done
+[ -n "$(ts_app)" ] || { echo "TrollStore not installed"; exit 1; }
+echo "TrollStore at $(ts_app)"
+for t in "$S"/tipa/*; do
+  [ -f "$t" ] || continue
+  echo "installing $t"; "$H" install "$t" || echo "install failed: $t"
+done
+echo "== done"
+TSBOOT
+  chmod 0755 "$lib/trollstore-boot.sh"
+  log "TrollStore: TrollHelper + TrollStore.tar staged in the prefix ($i app(s) to install at boot)"
+  return 0
+}
+unbundle_trollstore() {
+  local root="$DIR/jb/root"
+  rm -rf "$root/var/jb/Applications/TrollStorePersistenceHelper.app" "$root/var/jb/usr/share/ios-tools" \
+         "$root/var/jb/usr/libexec/ios-tools"
+  sed -i '/^Package: com\.opa334\.trollstorehelper$/,/^$/d' "$root/var/jb/Library/dpkg/status" 2>/dev/null || true
+}
+
 do_build() {
   credit
   [ -f "$DIR/common/build.sh" ] && [ -d "$DIR/.userland.git" ] || die "not set up yet - run step 2 first"
@@ -483,6 +591,19 @@ do_build() {
     log "NewTerm left out (HACKIOS_NEWTERM=0 or no jailbreak): removing it from the prefix"
     rm -rf jb/root/var/jb/Applications/NewTerm.app
     sed -i '/^Package: ws\.hbang\.newterm3$/,/^$/d' jb/root/var/jb/Library/dpkg/status 2>/dev/null || true
+  fi
+  # TrollStore (ios-tools): staged into the jailbreak prefix, installed at boot. HACKIOS_TROLLSTORE=0
+  # leaves it out.
+  local want_ts=off
+  if [ "$jb" = on ] && [ "${HACKIOS_TROLLSTORE:-1}" != 0 ]; then
+    if bundle_trollstore; then want_ts="on:$(ls jb/root/var/jb/usr/share/ios-tools/tipa 2>/dev/null | tr '\n' ' ')"
+    else log "TrollStore: not bundled (see above)"; unbundle_trollstore; fi
+  elif [ -d jb/root/var/jb/usr/share/ios-tools ]; then
+    log "TrollStore left out (HACKIOS_TROLLSTORE=0 or no jailbreak): removing it from the prefix"
+    unbundle_trollstore
+  fi
+  if [ "$(cat userland/.ios-tools-trollstore 2>/dev/null || echo off)" != "$want_ts" ]; then
+    system=1; log "the system image is remade ($([ "$want_ts" = off ] && echo without || echo with) TrollStore)"
   fi
   # their build remakes system.apfs only when its own inputs change: with the jailbreak (or NewTerm)
   # added or taken out it has to be remade too (userland/.ios-tools-jb / .ios-tools-newterm remember
@@ -544,6 +665,7 @@ PYWALL
     || die "the images were not built (see above)"
   echo "$jb" > userland/.ios-tools-jb
   echo "$want_nt" > userland/.ios-tools-newterm
+  echo "$want_ts" > userland/.ios-tools-trollstore
   echo "${want_wall:-stock}" > userland/.ios-tools-wallpaper
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
   log "build done - next: step 4 (boot)"
