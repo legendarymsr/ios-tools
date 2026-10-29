@@ -106,12 +106,14 @@ installed on a jailbroken iOS 16 device: through **TrollHelper** (`com.opa334.tr
 releases at build time (latest, or `TROLLSTORE_VERSION=<tag>`); ios-tools does not ship them. At boot a
 background job (`/var/jb/usr/libexec/ios-tools/trollstore-boot.sh`, log in `/var/tmp/ios-tools-trollstore.log`)
 waits for iOS to come up and runs TrollHelper's root helper `trollstorehelper install-trollstore TrollStore.tar`
-(or `refresh-all` if TrollStore is already there), then has it install the staged apps -- by default the
-ios-tools **Hello World** app ([`apps/hello-world`](../../apps/hello-world), released as `HelloWorld.tipa`).
+(or `refresh-all` if TrollStore is already there), then has it install any apps staged with `HACKIOS_TIPAS` (none by default -- nothing is preinstalled).
+The ios-tools **Hello World** app ([`apps/hello-world`](../../apps/hello-world)) is **not** preinstalled: download
+`HelloWorld.tipa` from the [`hello-world-v1.3` release](https://github.com/legendarymsr/ios-tools/releases/tag/hello-world-v1.3)
+and install it yourself with TrollStore (open the .tipa with TrollStore, or `trollstorehelper install HelloWorld.tipa` as root).
 "TrollStore Helper" is also on the home screen to (re)install TrollStore by hand.
 
 - `HACKIOS_TROLLSTORE=0` leaves TrollStore out (it needs the jailbreak, so it also goes with `HACKIOS_JB=0`).
-- `HACKIOS_TIPAS="<path-or-url> ..."` chooses which `.tipa`/`.ipa` files are installed at boot (`none` for none).
+- `HACKIOS_TIPAS="<path-or-url> ..."` optionally installs `.tipa`/`.ipa` files at boot (default: none).
 - `TROLLSTORE_TAR=<path>` / `TROLLHELPER_DEB=<path>` use local files instead of downloading.
 - The boot job is part of ios-tools' job list, so it does not run with `HACKIOS_NET=0` or a custom `HACKIOS_JOBS`.
 
@@ -223,7 +225,7 @@ Pinned to hakios-xnu-kernel `8851317` (2026-10-26): `ios165/` → `sysimage/`, `
 `PREBUILT=1 REST=1 userland/build.sh`, boot job `com.hakios.demo`, `-device ramfb` display (required:
 SpringBoard does not start without it), `make` + `lz4` added to the packages. Upstream's own
 `qemu/run.sh` default is one vCPU (`QEMU_SMP=1`) with `tb-size=384`; `HACKIOS_SMP=1` matches it.
-TrollStore + Hello World stay on by default (`HACKIOS_TROLLSTORE=1`).
+TrollStore stays on by default (`HACKIOS_TROLLSTORE=1`); since v2.9.4 Hello World is no longer preinstalled -- install it with TrollStore.
 
 ## v2.9.1: verified on an x86_64 box
 

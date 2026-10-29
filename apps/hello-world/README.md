@@ -10,7 +10,7 @@ sudo apt install clang lld curl zip xz-utils
 
 `build.sh` downloads an iOS 16.5 SDK (theos/sdks) and `ldid` (ProcursusTeam) into `.cache/` on first run
 (or set `SDK=` / `LDID=`). Targets arm64, iOS 14.0+. Bundle id `com.legendarymsr.helloworld`.
-The iOS VM (`QEMU/ios-t8030`) installs the released `HelloWorld.tipa` through TrollStore at boot.
+The iOS VM (`QEMU/ios-t8030`) does not preinstall it: install the released `HelloWorld.tipa` yourself with TrollStore.
 
 ## Root (v1.3)
 

@@ -34,8 +34,8 @@
 #      HACKIOS_TROLLSTORE=0 (leave out TrollStore; needs the jailbreak; next build),
 #      TROLLSTORE_VERSION=<tag> (opa334/TrollStore release to fetch, default the latest),
 #      TROLLSTORE_TAR=<path> / TROLLHELPER_DEB=<path> (use these local files instead of downloading),
-#      HACKIOS_TIPAS="<path-or-url> ..." (.tipa/.ipa files TrollStore installs at boot; default the
-#      ios-tools Hello World app; HACKIOS_TIPAS=none for none),
+#      HACKIOS_TIPAS="<path-or-url> ..." (optional .tipa/.ipa files TrollStore installs at boot; default
+#      none - install apps such as Hello World yourself with TrollStore),
 #      HACKIOS_ROOTFUL=0 (turn OFF the ephemeral writable-root overlay, which is ON by default -- a
 #      ramfs union over the system dirs so files can be created in /Applications, /Library, /usr, /bin,
 #      /sbin in memory; lost on a cold boot, cannot change existing read-only system files; next build),
@@ -453,11 +453,10 @@ for n in want:
 # At build time both release files are downloaded (never committed / redistributed by ios-tools)
 # and laid into the jailbreak prefix with a small boot script; at boot the script waits for iOS to
 # come up, installs TrollStore if it is not there (or refreshes its registrations if it is), then
-# lets TrollStore install the .tipa files staged in $HACKIOS_TIPAS (default: the ios-tools Hello
-# World app). TrollHelper also sits on the home screen ("TrollStore Helper") to (re)install by hand.
+# lets TrollStore install the .tipa files staged in $HACKIOS_TIPAS (default: none;
+# apps are installed by hand with TrollStore). TrollHelper also sits on the home screen ("TrollStore Helper") to (re)install by hand.
 # Never fatal: any failure just leaves TrollStore out. Returns 0 if it is staged, 1 if not.
 TROLLSTORE_REPO=https://github.com/opa334/TrollStore
-HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.3/HelloWorld.tipa
 ts_fetch() { # ts_fetch ASSET DEST
   local base="$TROLLSTORE_REPO/releases/latest/download"
   [ -n "${TROLLSTORE_VERSION:-}" ] && base="$TROLLSTORE_REPO/releases/download/$TROLLSTORE_VERSION"
@@ -504,10 +503,10 @@ bundle_trollstore() {
     curl -fsSL --retry 3 -o "$share/ldid" https://github.com/opa334/ldid/releases/latest/download/ldid \
       && chmod 755 "$share/ldid" || { log "TrollStore: ldid download failed - .tipa installs may fail (173)"; rm -f "$share/ldid"; }
   fi
-  # 3. the apps TrollStore installs at boot
+  # 3. the apps TrollStore installs at boot (opt-in via HACKIOS_TIPAS; none by default)
   rm -f "$share/tipa/"*
   local s i=0
-  for s in ${HACKIOS_TIPAS:-$HELLO_TIPA_URL}; do
+  for s in ${HACKIOS_TIPAS:-}; do
     [ "$s" = none ] && break
     i=$((i+1)); local dst; dst="$share/tipa/$i-$(basename "${s%%\?*}")"
     case "$s" in
