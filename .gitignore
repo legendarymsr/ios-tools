@@ -1,4 +1,6 @@
 
+!apps/*/tools/rpm2cpio.c
+!apps/*/tools/rpm2cpio.py
 # Build output
 # Gradle
 # IDE
@@ -15,6 +17,7 @@
 *.dmg
 *.iml
 *.ipsw
+*.zip
 */build/
 .DS_Store
 .gradle/
@@ -31,10 +34,12 @@ QEMU/*/launcher-app/local.properties
 _shared/setup-debian-chroot-BODY.sh
 android-ndk/
 android-sdk/
+apps/*/.cache/
+apps/*/build/
+apps/*/tools/fastfetch
+apps/*/tools/rpm2cpio
 build/
 com.apple.recovery.boot/
 gradle-app.setting
 local.properties
 mac_hdd_ng.img
-
-*.zip
