@@ -224,3 +224,13 @@ Pinned to hakios-xnu-kernel `8851317` (2026-10-26): `ios165/` → `sysimage/`, `
 SpringBoard does not start without it), `make` + `lz4` added to the packages. Upstream's own
 `qemu/run.sh` default is one vCPU (`QEMU_SMP=1`) with `tb-size=384`; `HACKIOS_SMP=1` matches it.
 TrollStore + Hello World stay on by default (`HACKIOS_TROLLSTORE=1`).
+
+## v2.9.1: verified on an x86_64 box
+
+Reached the home screen with TrollStore and Hello World and opened Hello World, in a Debian bookworm
+chroot with QEMU 10.0.2 from bookworm-backports and qemu-efi-aarch64 2022.11 (what this module installs),
+`HACKIOS_SMP=6 HACKIOS_SNAPSHOT=0`. The same image under Debian trixie's QEMU 10.0.13 + edk2 2025.02 wedged
+the guest at the Apple logo (vCPUs spinning, no log output), with 1, 4 or 6 vCPUs.
+TrollStore needs ldid to install fakesigned apps (error 173): it is now staged and put into TrollStore.app at boot.
+Hello World no longer asks for get-task-allow (TrollStore would arm Developer Mode: error 183).
+`HACKIOS_SSH_KEY=<public key>` at build starts sshd in iOS; `run` forwards 127.0.0.1:${HACKIOS_SSH_PORT:-2222}.

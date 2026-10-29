@@ -231,6 +231,19 @@ JOBS
     # "firmware", Sileo registered with LaunchServices), then fresh package lists for Sileo and apt
     cat >> "$f" <<'JOBS'
 /var/jb/bin/sh /var/jb/prep.sh
+JOBS
+    # ssh into iOS (opt-in): HACKIOS_SSH_KEY=<public key file> puts that key in /var/root/.ssh through
+    # their build's ssh/ directory (with a host key made here; SHARE=1 images never carry them) and
+    # starts the prefix's sshd; `run` forwards 127.0.0.1:${HACKIOS_SSH_PORT:-2222} to it. This is how
+    # the home screen is reached and driven from the host: sbreload, rwtouch, the TrollStore log.
+    if [ -n "${HACKIOS_SSH_KEY:-}" ] && [ -f "$HACKIOS_SSH_KEY" ]; then
+      mkdir -p "$DIR/ssh" && cp -f "$HACKIOS_SSH_KEY" "$DIR/ssh/authorized_keys"
+      [ -f "$DIR/ssh/ssh_host_ed25519_key" ] || ssh-keygen -q -t ed25519 -N '' -f "$DIR/ssh/ssh_host_ed25519_key"
+    fi
+    if [ -f "$DIR/ssh/authorized_keys" ] && [ -x "$DIR/jb/root/var/jb/usr/sbin/sshd" ]; then
+      printf '%s\n' '/var/jb/usr/sbin/sshd -D -e -h /var/root/.ssh/ssh_host_ed25519_key -o UsePAM=no -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AuthorizedKeysFile=/var/root/.ssh/authorized_keys &' >> "$f"
+    fi
+    cat >> "$f" <<'JOBS'
 /redwood/bin/net_test waitaddr en0 60 resolve apt.procurs.us
 /var/jb/usr/bin/apt-get update
 JOBS
@@ -444,7 +457,7 @@ for n in want:
 # World app). TrollHelper also sits on the home screen ("TrollStore Helper") to (re)install by hand.
 # Never fatal: any failure just leaves TrollStore out. Returns 0 if it is staged, 1 if not.
 TROLLSTORE_REPO=https://github.com/opa334/TrollStore
-HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.0/HelloWorld.tipa
+HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.1/HelloWorld.tipa
 ts_fetch() { # ts_fetch ASSET DEST
   local base="$TROLLSTORE_REPO/releases/latest/download"
   [ -n "${TROLLSTORE_VERSION:-}" ] && base="$TROLLSTORE_REPO/releases/download/$TROLLSTORE_VERSION"
@@ -484,6 +497,13 @@ bundle_trollstore() {
       ts_fetch TrollStore.tar "$share/TrollStore.tar" || { log "TrollStore: TrollStore.tar download failed - left out"; rm -f "$share/TrollStore.tar"; return 1; }
     fi
   fi
+  # 2b. ldid (opa334's fork, AGPL-3.0, github.com/opa334/ldid): TrollStore signs apps with it and refuses
+  # fakesigned .tipa files without it (trollstorehelper returns 173); the app downloads it on demand, the
+  # boot script puts it in place instead
+  if [ ! -s "$share/ldid" ]; then
+    curl -fsSL --retry 3 -o "$share/ldid" https://github.com/opa334/ldid/releases/latest/download/ldid \
+      && chmod 755 "$share/ldid" || { log "TrollStore: ldid download failed - .tipa installs may fail (173)"; rm -f "$share/ldid"; }
+  fi
   # 3. the apps TrollStore installs at boot
   rm -f "$share/tipa/"*
   local s i=0
@@ -515,6 +535,7 @@ while [ $n -lt 40 ]; do
 done
 [ -n "$(ts_app)" ] || { echo "TrollStore not installed"; exit 1; }
 echo "TrollStore at $(ts_app)"
+[ -f "$S/ldid" ] && [ ! -f "$(ts_app)/ldid" ] && cp "$S/ldid" "$(ts_app)/ldid" && chmod 755 "$(ts_app)/ldid" && echo opa334 > "$(ts_app)/ldid.version"
 for t in "$S"/tipa/*; do
   [ -f "$t" ] || continue
   echo "installing $t"; "$H" install "$t" || echo "install failed: $t"
@@ -763,6 +784,10 @@ do_run() {
   rm -f "$DIR/qemu/.snapshot-failed"
   # the host's clock for timesync in iOS: a connection to 10.0.2.100:37 gets `date +%s.%N`
   export QEMU_NET_EXTRA='guestfwd=tcp:10.0.2.100:37-cmd:date +%s.%N'
+  if [ -f "$DIR/ssh/authorized_keys" ]; then
+    QEMU_NET_EXTRA="$QEMU_NET_EXTRA,hostfwd=tcp:127.0.0.1:${HACKIOS_SSH_PORT:-2222}-:22"
+    log "ssh: 127.0.0.1:${HACKIOS_SSH_PORT:-2222} -> iOS :22 (root, the key from HACKIOS_SSH_KEY)"
+  fi
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} $(fbscale_arg) ${HACKIOS_CMDLINE:-}" \

@@ -6,7 +6,5 @@
 	<string>TROLLSTORE.com.legendarymsr.helloworld</string>
 	<key>com.apple.developer.team-identifier</key>
 	<string>TROLLSTORE</string>
-	<key>get-task-allow</key>
-	<true/>
 </dict>
 </plist>
