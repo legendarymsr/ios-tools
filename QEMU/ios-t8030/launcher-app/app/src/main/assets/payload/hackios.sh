@@ -457,7 +457,7 @@ for n in want:
 # World app). TrollHelper also sits on the home screen ("TrollStore Helper") to (re)install by hand.
 # Never fatal: any failure just leaves TrollStore out. Returns 0 if it is staged, 1 if not.
 TROLLSTORE_REPO=https://github.com/opa334/TrollStore
-HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.1/HelloWorld.tipa
+HELLO_TIPA_URL=https://github.com/legendarymsr/ios-tools/releases/download/hello-world-v1.2/HelloWorld.tipa
 ts_fetch() { # ts_fetch ASSET DEST
   local base="$TROLLSTORE_REPO/releases/latest/download"
   [ -n "${TROLLSTORE_VERSION:-}" ] && base="$TROLLSTORE_REPO/releases/download/$TROLLSTORE_VERSION"
