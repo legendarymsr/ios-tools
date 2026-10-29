@@ -25,7 +25,10 @@ rm -rf "$OUT"; APP=$OUT/Payload/HelloWorld.app; mkdir -p "$APP"
 "$CLANG" -target arm64-apple-ios14.0 -isysroot "$SDK" -fobjc-arc -O2 \
   -fuse-ld="$LLD" -Wl,-platform_version,ios,14.0,16.5 \
   -framework UIKit -framework Foundation main.m -o "$APP/HelloWorld"
+"$CLANG" -target arm64-apple-ios14.0 -isysroot "$SDK" -O2 -fuse-ld="$LLD" \
+  -Wl,-platform_version,ios,14.0,16.5 roothelper.c -o "$APP/roothelper"
 cp Info.plist "$APP/"
+"$LDID" -Sentitlements.plist "$APP/roothelper"
 "$LDID" -Sentitlements.plist "$APP/HelloWorld"
 ( cd "$OUT" && zip -qr HelloWorld.tipa Payload )
 echo "built $OUT/HelloWorld.tipa"
