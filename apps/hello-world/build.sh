@@ -36,7 +36,7 @@ cp Info.plist "$APP/"
 cp -f tools/fastfetch tools/rpm2cpio "$APP/"
 "$LDID" -Sentitlements.plist "$APP/fastfetch"
 "$LDID" -Sentitlements.plist "$APP/rpm2cpio"
-cp -f tools/dnf "$APP/dnf"; chmod 755 "$APP/dnf"
+cp -f tools/dnf tools/rpm2cpio.py "$APP/"; chmod 755 "$APP/dnf" "$APP/rpm2cpio.py"
 "$LDID" -Sentitlements.plist "$APP/HelloWorld"
 ( cd "$OUT" && zip -qr HelloWorld.tipa Payload )
 echo "built $OUT/HelloWorld.tipa"

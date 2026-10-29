@@ -11,6 +11,13 @@ RELEASEVER="${DNF_RELEASEVER:-40}"
 ARCH="${DNF_ARCH:-aarch64}"
 PATH="/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:$PATH"
 mkdir -p "$DB/installed" "$CACHE" "$DNFROOT"
+rpm2cpio() {
+  if [ -f /var/jb/usr/local/bin/rpm2cpio.py ]; then
+    python3 /var/jb/usr/local/bin/rpm2cpio.py "$@"
+  else
+    command rpm2cpio "$@"
+  fi
+}
 
 metalink() {
   # pick first http(s) url from fedora metalink
@@ -58,12 +65,12 @@ cmd_install() {
   done
   # Use Fedora's API-ish: download repodata primary.xml.gz is heavy; instead hit the mirror Packages letter dir listing via curl - not always allowed.
   # Prefer: https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os/Packages/$first/
-  base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
+  base="https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
   local listing rpmfile
   listing=$(curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$pkg"'-[^"]*\.rpm\)".*/\1/p' | head -1) || true
   if [ -z "$listing" ]; then
     # try updates
-    base="https://dl.fedoraproject.org/pub/fedora/linux/updates/$RELEASEVER/Everything/$ARCH"
+    base="https://archives.fedoraproject.org/pub/archive/fedora/linux/updates/$RELEASEVER/Everything/$ARCH"
     listing=$(curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$pkg"'-[^"]*\.rpm\)".*/\1/p' | head -1) || true
   fi
   [ -n "$listing" ] || { echo "No match for package $pkg in Fedora $RELEASEVER/$ARCH"; return 1; }
@@ -72,7 +79,7 @@ cmd_install() {
   curl -fL --retry 3 -o "$CACHE/$rpmfile" "$base/Packages/$first/$rpmfile"
   echo "Extracting to $DNFROOT"
   mkdir -p "$DNFROOT"
-  rpm2cpio "$CACHE/$rpmfile" | (cd "$DNFROOT" && cpio -idmu 2>/dev/null)
+  rpm2cpio "$CACHE/$rpmfile" | (cd "$DNFROOT" && cpio -idmu 2>/dev/null) || true
   printf '%s\n' "$rpmfile" > "$DB/installed/$pkg"
   # symlink bins into /var/jb/usr/local/bin when present
   if [ -d "$DNFROOT/usr/bin" ]; then
@@ -94,7 +101,7 @@ cmd_remove() {
 cmd_search() {
   local q="$1" base first listing
   first=$(printf '%s' "$q" | cut -c1 | tr 'A-Z' 'a-z')
-  base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
+  base="https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
   echo "======================= Name Exactly Matched Packages ======================="
   curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$q"'-[^"]*\.rpm\)".*/\1/p' | head -20 | while read -r r; do
     echo "$r"
