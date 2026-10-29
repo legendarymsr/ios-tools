@@ -1,0 +1,115 @@
+#!/bin/sh
+# ios-tools dnf: Fedora 40 repo frontend for Darwin/iOS (TrollStore).
+# Real Fedora /usr/bin/dnf is a Linux ELF (libdnf); this shell frontend speaks the same
+# commands against Fedora metalinks, downloads RPMs, and extracts them into $DNFROOT
+# with rpm2cpio+cpio. Preinstalled: fastfetch (native iOS build). Not apt.
+set -e
+DNFROOT="${DNFROOT:-/var/jb/dnfroot}"
+DB="$DNFROOT/var/lib/dnf"
+CACHE="$DNFROOT/var/cache/dnf"
+RELEASEVER="${DNF_RELEASEVER:-40}"
+ARCH="${DNF_ARCH:-aarch64}"
+PATH="/var/jb/usr/local/bin:/var/jb/usr/bin:/var/jb/bin:$PATH"
+mkdir -p "$DB/installed" "$CACHE" "$DNFROOT"
+
+metalink() {
+  # pick first http(s) url from fedora metalink
+  curl -fsSL "https://mirrors.fedoraproject.org/metalink?repo=$1&arch=$ARCH" \
+    | sed -n 's/.*href="\(https\{0,1\}:\/\/[^"]*\)".*/\1/p' | head -1
+}
+
+repo_base() {
+  local m; m=$(metalink "fedora-$RELEASEVER") || return 1
+  # metalink points at a repodata dir or mirror root; normalize to .../Everything/$ARCH/os/
+  echo "$m" | sed 's#/repodata/.*##;s#/$##'
+}
+
+cmd_version() {
+  echo "dnf version 4.23.0 (ios-tools fedora-rpm frontend)"
+  echo "releasever=$RELEASEVER basearch=$ARCH"
+  echo "installroot=$DNFROOT"
+  echo "note: not Fedora libdnf; installs RPM payloads for $ARCH into installroot"
+}
+
+cmd_list_installed() {
+  echo "Installed Packages"
+  for f in "$DB/installed"/*; do
+    [ -f "$f" ] || continue
+    printf '  %s\n' "$(basename "$f")"
+  done
+}
+
+cmd_install() {
+  local pkg="$1" base url rpm
+  [ -n "$pkg" ] || { echo "usage: dnf install <pkg>"; return 1; }
+  if [ -f "$DB/installed/$pkg" ]; then echo "Package $pkg is already installed."; return 0; fi
+  echo "Fedora $RELEASEVER/$ARCH: resolving $pkg..."
+  base=$(repo_base) || { echo "could not resolve fedora metalink"; return 1; }
+  # try common path patterns for the rpm (direct package path via mirror Packages/p/)
+  local letter first
+  first=$(printf '%s' "$pkg" | cut -c1 | tr 'A-Z' 'a-z')
+  # query repo primary via a simple approach: use Fedora's koji/download or mirror Packages
+  url=""
+  for path in \
+    "$base/Packages/$first/$pkg" \
+    "$base/Packages/$first" \
+    ; do
+    :
+  done
+  # Use Fedora's API-ish: download repodata primary.xml.gz is heavy; instead hit the mirror Packages letter dir listing via curl - not always allowed.
+  # Prefer: https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os/Packages/$first/
+  base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
+  local listing rpmfile
+  listing=$(curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$pkg"'-[^"]*\.rpm\)".*/\1/p' | head -1) || true
+  if [ -z "$listing" ]; then
+    # try updates
+    base="https://dl.fedoraproject.org/pub/fedora/linux/updates/$RELEASEVER/Everything/$ARCH"
+    listing=$(curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$pkg"'-[^"]*\.rpm\)".*/\1/p' | head -1) || true
+  fi
+  [ -n "$listing" ] || { echo "No match for package $pkg in Fedora $RELEASEVER/$ARCH"; return 1; }
+  rpmfile="$listing"
+  echo "Downloading $rpmfile"
+  curl -fL --retry 3 -o "$CACHE/$rpmfile" "$base/Packages/$first/$rpmfile"
+  echo "Extracting to $DNFROOT"
+  mkdir -p "$DNFROOT"
+  rpm2cpio "$CACHE/$rpmfile" | (cd "$DNFROOT" && cpio -idmu 2>/dev/null)
+  printf '%s\n' "$rpmfile" > "$DB/installed/$pkg"
+  # symlink bins into /var/jb/usr/local/bin when present
+  if [ -d "$DNFROOT/usr/bin" ]; then
+    for b in "$DNFROOT/usr/bin"/*; do
+      [ -f "$b" ] || [ -L "$b" ] || continue
+      ln -sf "$b" "/var/jb/usr/local/bin/$(basename "$b")" 2>/dev/null || true
+    done
+  fi
+  echo "Complete!"
+}
+
+cmd_remove() {
+  local pkg="$1"
+  [ -f "$DB/installed/$pkg" ] || { echo "Package $pkg is not installed."; return 1; }
+  rm -f "$DB/installed/$pkg"
+  echo "Removed $pkg (file payload left in $DNFROOT; reinstall to refresh)."
+}
+
+cmd_search() {
+  local q="$1" base first listing
+  first=$(printf '%s' "$q" | cut -c1 | tr 'A-Z' 'a-z')
+  base="https://dl.fedoraproject.org/pub/fedora/linux/releases/$RELEASEVER/Everything/$ARCH/os"
+  echo "======================= Name Exactly Matched Packages ======================="
+  curl -fsSL "$base/Packages/$first/" 2>/dev/null | sed -n 's/.*href="\('"$q"'-[^"]*\.rpm\)".*/\1/p' | head -20 | while read -r r; do
+    echo "$r"
+  done
+}
+
+usage() {
+  echo "usage: dnf [--version] | install <pkg> | remove <pkg> | search <pkg> | list installed"
+}
+
+case "${1:-}" in
+  --version|version) cmd_version ;;
+  install) shift; cmd_install "${1:-}" ;;
+  remove|erase) shift; cmd_remove "${1:-}" ;;
+  search) shift; cmd_search "${1:-}" ;;
+  list) shift; case "${1:-}" in installed|"") cmd_list_installed ;; *) usage; exit 1 ;; esac ;;
+  *) usage; exit 1 ;;
+esac

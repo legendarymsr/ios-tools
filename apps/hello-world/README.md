@@ -1,20 +1,27 @@
-# Hello World (iOS)
+# Hello World (iOS terminal)
 
-The smallest possible UIKit app: one screen that says "Hello, world". One Objective-C file, no storyboard,
-built on Linux without Xcode, fakesigned with `ldid` for [TrollStore](https://github.com/opa334/TrollStore).
+A small UIKit terminal for [TrollStore](https://github.com/opa334/TrollStore): one text view, one input
+line, commands run as **root** via TrollStore's persona spawn (persona 99, uid/gid 0).
 
 ```sh
 sudo apt install clang lld curl zip xz-utils
 ./build.sh          # -> build/HelloWorld.tipa
 ```
 
-`build.sh` downloads an iOS 16.5 SDK (theos/sdks) and `ldid` (ProcursusTeam) into `.cache/` on first run
-(or set `SDK=` / `LDID=`). Targets arm64, iOS 14.0+. Bundle id `com.legendarymsr.helloworld`.
-The iOS VM (`QEMU/ios-t8030`) does not preinstall it: install the released `HelloWorld.tipa` yourself with TrollStore.
+Install the `.tipa` yourself with TrollStore (the qemu-t8030 module does **not** preinstall it).
 
-## Root (v1.3)
+## Bundled tools
 
-`roothelper.c` is bundled next to the app. The app spawns it as root the way TrollStore does
-(`posix_spawn` with persona 99, uid/gid 0; needs the `platform-application`, `no-sandbox` and
-`persona-mgmt` entitlements in `entitlements.plist`) and shows its output under the label,
-e.g. `root: uid=0, read /etc/master.passwd`. No `get-task-allow`: TrollStore rejects it (error 183).
+On first launch the app copies these into `/var/jb/usr/local/bin`:
+
+| Tool | What it is |
+|------|------------|
+| `fastfetch` | Native arm64 iOS binary (sysctl/uname). **Not** upstream fastfetch-cli (that needs macOS frameworks). Preinstalled / on `PATH`. |
+| `dnf` | Shell frontend against **Fedora 40 aarch64** repos (metalink/dl.fedoraproject.org). Speaks `install` / `remove` / `search` / `list installed` / `--version`. Downloads RPMs and extracts payloads into `/var/jb/dnfroot` with bundled `rpm2cpio` + host `cpio`. **Not** Fedora's libdnf (Linux ELF); Darwin/iOS cannot load that. Named `dnf` because the user asked for dnf, not apt. |
+| `rpm2cpio` | Minimal native helper used by `dnf`. |
+
+A full Fedora 40 aarch64 rootfs with real `/usr/bin/dnf` + upstream `fastfetch` was built on the
+host under qemu-user for reference (`dnf --installroot`, ~356M); shipping and running those Linux
+ELFs on Darwin/iOS would need a user-mode Linux emulator, which this release does not include.
+
+Entitlements: `platform-application`, `no-sandbox`, `persona-mgmt` (no `get-task-allow`).
