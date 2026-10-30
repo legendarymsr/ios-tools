@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # companion-vm.sh -- the small aarch64 "USB host" VM that stands in for
 # ChefKiss's companion VM, run INSIDE the Debian chroot.

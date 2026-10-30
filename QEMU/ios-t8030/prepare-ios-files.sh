@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # prepare-ios-files.sh  --  lay out the files Inferno needs to boot an iPhone 11
 # (t8030). Run INSIDE the Debian chroot, in a data folder (NOT in the Inferno

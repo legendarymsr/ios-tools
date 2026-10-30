@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # run-t8030.sh  --  boot the emulated iPhone 11 (t8030) in Inferno.
 # Run INSIDE the Debian chroot, from the data folder prepared by

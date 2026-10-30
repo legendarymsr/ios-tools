@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # install-qemu.sh  --  run INSIDE the Debian chroot (see setup-debian-chroot.sh).
 #

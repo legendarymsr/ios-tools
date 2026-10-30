@@ -1,4 +1,5 @@
 #!/bin/busybox sh
+# SPDX-License-Identifier: GPL-3.0-or-later
 # /init of the USB-host ("companion") VM initramfs (built by
 # build-restore-tools.sh). Loads the virtio/9p/EHCI/apfs modules, mounts the
 # Debian chroot read-only (9p tag "hostroot") and the Inferno data folder

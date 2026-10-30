@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Pack qemu-t8030-launcher-vX.Y.Z.zip from the current tree + built APK.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)

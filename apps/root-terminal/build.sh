@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build RootTerminal.tipa on Linux, no Xcode: clang + ld64.lld against an iOS SDK, ldid fakesign.
 #   ./build.sh            -> build/RootTerminal.tipa (install it with TrollStore)
 # Needs: clang, ld64.lld (Debian: apt install clang lld), curl, zip, xz.

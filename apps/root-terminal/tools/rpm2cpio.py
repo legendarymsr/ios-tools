@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 import sys, struct, subprocess, os
 def main():
     data = open(sys.argv[1],'rb').read() if len(sys.argv)>1 else sys.stdin.buffer.read()

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # vm-power.sh off|status - power off the Inferno t8030 VM.
 # 1. system_powerdown via the QEMU monitor socket ($DATA/qemu-monitor.sock),
 #    wait up to POWERDOWN_WAIT (20 s) for the VM to stop;

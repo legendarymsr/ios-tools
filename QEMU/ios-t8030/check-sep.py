@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Sanity checks for the SEP inputs of an Inferno t8030 boot.
 #   check-sep.py rom  AppleSEPROM-Cebu-B1
 #   check-sep.py dec  sep-firmware.n104.RELEASE            (decrypted payload)

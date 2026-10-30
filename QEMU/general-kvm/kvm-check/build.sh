@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Cross-compile kvmcheck for Android aarch64 with the NDK.
 # Usage: NDK=/path/to/android-ndk ./build.sh
 set -euo pipefail

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """
 patch-launchd.py - edit an iOS launchd.plist (launch service cache) for an
 Inferno t8030 guest, following the ChefKiss Inferno guide:

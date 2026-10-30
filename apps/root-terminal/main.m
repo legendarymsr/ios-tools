@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Hello World terminal: UITextView + input, root shell via TrollStore persona spawn.
 #import <UIKit/UIKit.h>
 #include <spawn.h>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Amalgamated vhci-bridge for Android asset extract (flat file).
  * Generated from vhci-bridge/{tcp-usb.h,usbip_wire.h,bridge.c}.
  */

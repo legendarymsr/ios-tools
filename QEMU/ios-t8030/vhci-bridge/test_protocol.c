@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * Local protocol test for vhci-bridge without a real kernel VHCI or iOS VM.
  * 1) Spawn bridge with a fake VHCI sysfs that captures the attach sockfd via

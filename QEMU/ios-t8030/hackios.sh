@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # hackios.sh -- run HackiOS (iOS 16.5 user space on Apple's open-source XNU kernel) in QEMU's
 # `virt` machine inside this Debian chroot on the phone (launcher steps 2-4).
 #

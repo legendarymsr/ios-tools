@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import socket, struct, os, time, threading, sys, array, random, select
 SEED=int(sys.argv[1]) if len(sys.argv)>1 else 1
 random.seed(SEED)

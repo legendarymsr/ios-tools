@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 import socket, struct, os, time, threading, sys, array
 P='/tmp/vt'; ATT=P+'/att.sock'; USB=P+'/usb.sock'
 for f in (ATT,USB):

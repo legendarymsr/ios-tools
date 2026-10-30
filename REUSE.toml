@@ -1,0 +1,39 @@
+version = 1
+
+[[annotations]]
+path = ["QEMU/ios-t8030/inferno-*.patch"]
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+SPDX-FileComment = "Patches against ChefKissInc/Inferno (QEMU fork); patched files are AGPL-3.0-or-later upstream."
+
+[[annotations]]
+path = ["QEMU/ios-t8030/idevicerestore-*.patch"]
+SPDX-License-Identifier = "LGPL-3.0-or-later"
+
+[[annotations]]
+path = ["QEMU/ios-t8030/libirecovery-*.patch"]
+SPDX-License-Identifier = "LGPL-2.1-or-later"
+
+[[annotations]]
+path = ["**/ws.hbang.newterm3_iphoneos-arm64.deb", "**/NewTerm-NOTICE.md"]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "HASHBANG Productions"
+
+[[annotations]]
+path = ["**/xz-arm64", "**/LICENSE-xz"]
+SPDX-License-Identifier = "0BSD"
+SPDX-FileComment = "xz utils binary; see LICENSE-xz alongside for exact terms."
+
+[[annotations]]
+path = ["**/gradlew", "**/gradlew.bat", "Checkm8OTG/gradle/**"]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "Gradle, Inc."
+
+[[annotations]]
+path = ["MacOS-KVM/launcher-app/app/src/main/java/com/macoskvm/launcher/Steps.java"]
+SPDX-License-Identifier = "LicenseRef-Unclear-OSX-KVM"
+SPDX-FileComment = "Based on kholia/OSX-KVM, which has no clear license file. Left unlicensed pending upstream clarification."
+
+[[annotations]]
+path = ["**/*.apk", "**/kvmcheck-arm64", "**/rootful-arm64", "**/timesync-arm64"]
+SPDX-License-Identifier = "GPL-3.0-or-later"
+SPDX-FileComment = "Build outputs of this repo's own GPL-3.0-or-later sources."

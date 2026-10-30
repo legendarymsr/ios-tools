@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # jailbreak-prep.sh - set an Inferno t8030 guest up as a jailbroken-style iOS VM,
 # following ChefKiss's documented Inferno flow:

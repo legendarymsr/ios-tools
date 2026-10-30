@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # restore-ios.sh -- automatic IPSW restore of the Inferno t8030 guest, run
 # INSIDE the Debian chroot (app step "5. Restore iOS (automatic)").

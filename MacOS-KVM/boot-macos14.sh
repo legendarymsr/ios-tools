@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # boot-macos14.sh
 # Boot macOS 14 (Sonoma) under QEMU using the OSX-KVM OpenCore + OVMF stack,

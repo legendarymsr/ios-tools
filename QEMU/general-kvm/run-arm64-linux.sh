@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # run-arm64-linux.sh  --  boot an ARM64 Linux guest with KVM acceleration.
 # Run INSIDE the Debian chroot, as root, with /dev/kvm present.

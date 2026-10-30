@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # force-net.sh — working reverse-tether for Inferno t8030 on Android
 # iOS first (no network), the USB-host VM in net mode once iOS is up, then the
 # DHCP kick typed into the guest's root shell.

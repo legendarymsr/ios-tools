@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* USB/IP wire headers (linux/drivers/usb/usbip) - userspace copy */
 #ifndef IOS_TOOLS_USBIP_WIRE_H
 #define IOS_TOOLS_USBIP_WIRE_H

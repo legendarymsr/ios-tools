@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # setup-build-deps.sh  --  run INSIDE the Debian chroot (see
 # ../general-kvm/setup-debian-chroot.sh). Installs everything needed to build

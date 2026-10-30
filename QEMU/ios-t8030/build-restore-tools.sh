@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # build-restore-tools.sh -- run INSIDE the Debian chroot. Builds everything the
 # automatic restore step (restore-ios.sh) needs, into /opt/inferno-restore:

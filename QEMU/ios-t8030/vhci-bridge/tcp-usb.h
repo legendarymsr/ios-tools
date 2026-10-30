@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* Inferno cc4302a tcp-usb.h (AGPL-3.0) - wire format only */
 #ifndef IOS_TOOLS_TCP_USB_H
 #define IOS_TOOLS_TCP_USB_H

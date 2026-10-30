@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # fetch-sonoma.sh
 # Download the macOS 14 (Sonoma) recovery image via OSX-KVM's fetch-macOS-v2.py

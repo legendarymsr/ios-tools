@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Hello World: one screen, one label, plus one line from a helper TrollStore lets us run as root. UIKit, no storyboard, no Xcode.
 #import <UIKit/UIKit.h>
 #include <spawn.h>

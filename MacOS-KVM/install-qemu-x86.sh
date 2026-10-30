@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # install-qemu-x86.sh
 # Install qemu-system-x86 (and helpers) inside the Debian chroot.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * rootful: an ephemeral "rootful" overlay for HackiOS (ios-tools), run by hackios.sh
  *          when built with HACKIOS_ROOTFUL=1.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # vhci-usb.sh -- Inferno usb-tcp <-> Linux VHCI, run inside the Debian chroot.
 # Replaces the companion USB-host VM when the Larry kernel has

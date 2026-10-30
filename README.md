@@ -56,3 +56,21 @@ See [`MacOS-KVM/README.md`](MacOS-KVM/README.md) for install steps, caveats,
 and attribution.
 
 See [`Checkm8OTG/README.md`](Checkm8OTG/README.md) for full docs and caveats.
+
+## Licensing
+
+This repo is multi-licensed per file (REUSE layout: SPDX headers, `LICENSES/`, `REUSE.toml`).
+
+| Path | License |
+|---|---|
+| Original code (scripts, Java/Kotlin, C, Objective-C, Python, `apps/`) | GPL-3.0-or-later (`LICENSE`) |
+| `kernel-patches/` (XNU / HakiOS kernel-derived, none vendored yet) | APSL-2.0 |
+| `qemu-patches/` (upstream QEMU-derived, none vendored yet) | GPL-2.0-or-later, or the upstream file's license |
+| `QEMU/ios-t8030/inferno-*.patch` | AGPL-3.0-or-later (Inferno upstream) |
+| `QEMU/ios-t8030/idevicerestore-*.patch` | LGPL-3.0-or-later |
+| `QEMU/ios-t8030/libirecovery-*.patch` | LGPL-2.1-or-later |
+| NewTerm `.deb` / Gradle wrapper | Apache-2.0 |
+| `xz-arm64` | see `LICENSE-xz` |
+| `MacOS-KVM/.../Steps.java` | unclear (based on OSX-KVM), no header yet |
+
+APSL-2.0 and the GPL are incompatible, so APSL code and GPL code are never put in the same file and are kept in separate directories. See `THIRD_PARTY_NOTICES.md`.

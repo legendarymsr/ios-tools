@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # build-inferno.sh  --  clone and build Inferno (ChefKiss), the iPhone 11 /
 # t8030 Apple-Silicon emulator (formerly QEMUAppleSilicon / qemu-t8030).

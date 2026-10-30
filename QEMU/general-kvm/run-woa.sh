@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # run-woa.sh  --  boot Windows on ARM (ARM64) with KVM acceleration.
 # Run INSIDE the Debian chroot, as root, with /dev/kvm present.

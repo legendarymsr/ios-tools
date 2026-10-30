@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * kvmcheck - probe /dev/kvm on an Android (aarch64) host.
  *

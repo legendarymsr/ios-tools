@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /*
  * timesync: keeps iOS's clock right under QEMU, for HackiOS run by hackios.sh.
  *

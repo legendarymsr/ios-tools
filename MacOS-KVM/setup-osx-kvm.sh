@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # setup-osx-kvm.sh
 # Stage OSX-KVM assets (OVMF, OpenCore, fetch script) into the working dir and
