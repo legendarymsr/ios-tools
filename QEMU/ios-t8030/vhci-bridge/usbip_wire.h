@@ -1,5 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-/* USB/IP wire headers (linux/drivers/usb/usbip) - userspace copy */
+// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-FileCopyrightText: 2003-2008 Takahiro Hirofuchi
+// SPDX-FileCopyrightText: 2015-2016 Samsung Electronics
+// SPDX-FileCopyrightText: 2026 legendarymsr
+/* USB/IP wire headers: userspace copy of the struct layouts in Linux
+ * drivers/usb/usbip/usbip_common.h (GPL-2.0+). URB flag values and the
+ * usb_device_speed enum are Linux USB ABI constants. */
 #ifndef IOS_TOOLS_USBIP_WIRE_H
 #define IOS_TOOLS_USBIP_WIRE_H
 #include <stdint.h>

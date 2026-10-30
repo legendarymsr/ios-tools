@@ -1,0 +1,4 @@
+checkra1n is closed-source freeware by the checkra1n team (https://checkra.in).
+No open-source license is granted. All rights reserved by the checkra1n team.
+The binary is included unmodified for convenience only; it is NOT covered by
+this repository's GPL-3.0-or-later license.

@@ -1,16 +1,64 @@
 version = 1
 
+# Default: everything not otherwise marked is legendarymsr's own work.
+# Per-file SPDX headers and the more specific annotations below win.
+[[annotations]]
+path = ["**"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 legendarymsr"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+[[annotations]]
+path = ["kernel-patches/**"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
+SPDX-License-Identifier = "APSL-2.0"
+SPDX-FileComment = "Files here patch Apple XNU sources and are APSL-2.0."
+
+[[annotations]]
+path = ["qemu-patches/**"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+SPDX-FileComment = "Files here patch QEMU sources and are GPL-2.0-or-later."
+
+[[annotations]]
+path = ["**/gradle/wrapper/**"]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "Gradle, Inc."
+
+[[annotations]]
+path = ["**/xz-arm64", "**/LICENSE-xz"]
+SPDX-License-Identifier = "0BSD"
+SPDX-FileCopyrightText = "The XZ Utils authors and contributors"
+
+[[annotations]]
+path = ["Checkm8OTG/app/src/main/assets/gaster"]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileCopyrightText = "0x7ff"
+
+[[annotations]]
+path = ["Checkm8OTG/app/src/main/assets/palera1n"]
+SPDX-License-Identifier = "MIT"
+SPDX-FileCopyrightText = "2023 palera1n team"
+
+[[annotations]]
+path = ["Checkm8OTG/app/src/main/assets/checkra1n"]
+SPDX-License-Identifier = "LicenseRef-checkra1n"
+SPDX-FileCopyrightText = "checkra1n team"
+
 [[annotations]]
 path = ["QEMU/ios-t8030/inferno-*.patch"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
 SPDX-FileComment = "Patches against ChefKissInc/Inferno (QEMU fork); patched files are AGPL-3.0-or-later upstream."
 
 [[annotations]]
 path = ["QEMU/ios-t8030/idevicerestore-*.patch"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
 SPDX-License-Identifier = "LGPL-3.0-or-later"
 
 [[annotations]]
 path = ["QEMU/ios-t8030/libirecovery-*.patch"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
 SPDX-License-Identifier = "LGPL-2.1-or-later"
 
 [[annotations]]
@@ -19,21 +67,12 @@ SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "HASHBANG Productions"
 
 [[annotations]]
-path = ["**/xz-arm64", "**/LICENSE-xz"]
-SPDX-License-Identifier = "0BSD"
-SPDX-FileComment = "xz utils binary; see LICENSE-xz alongside for exact terms."
-
-[[annotations]]
 path = ["**/gradlew", "**/gradlew.bat", "Checkm8OTG/gradle/**"]
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileCopyrightText = "Gradle, Inc."
 
 [[annotations]]
-path = ["MacOS-KVM/launcher-app/app/src/main/java/com/macoskvm/launcher/Steps.java"]
-SPDX-License-Identifier = "LicenseRef-Unclear-OSX-KVM"
-SPDX-FileComment = "Based on kholia/OSX-KVM, which has no clear license file. Left unlicensed pending upstream clarification."
-
-[[annotations]]
 path = ["**/*.apk", "**/kvmcheck-arm64", "**/rootful-arm64", "**/timesync-arm64"]
+SPDX-FileCopyrightText = "2026 legendarymsr"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 SPDX-FileComment = "Build outputs of this repo's own GPL-3.0-or-later sources."

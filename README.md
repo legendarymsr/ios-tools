@@ -70,7 +70,8 @@ This repo is multi-licensed per file (REUSE layout: SPDX headers, `LICENSES/`, `
 | `QEMU/ios-t8030/idevicerestore-*.patch` | LGPL-3.0-or-later |
 | `QEMU/ios-t8030/libirecovery-*.patch` | LGPL-2.1-or-later |
 | NewTerm `.deb` / Gradle wrapper | Apache-2.0 |
-| `xz-arm64` | see `LICENSE-xz` |
-| `MacOS-KVM/.../Steps.java` | unclear (based on OSX-KVM), no header yet |
+| `xz-arm64` | 0BSD (see `LICENSE-xz`) |
+| `QEMU/ios-t8030/vhci-bridge/usbip_wire.h` | GPL-2.0-or-later (struct layouts from Linux `usbip_common.h`) |
+| Checkm8OTG bundled `gaster` / `palera1n` / `checkra1n` | Apache-2.0 / MIT / proprietary freeware |
 
 APSL-2.0 and the GPL are incompatible, so APSL code and GPL code are never put in the same file and are kept in separate directories. See `THIRD_PARTY_NOTICES.md`.
