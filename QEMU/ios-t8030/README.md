@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.9.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.10.0.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -24,15 +24,22 @@ authorised or endorsed by Apple Inc.
 Nothing of HackiOS is copied into this repository: `hackios.sh` clones
 [hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel) (kernel Apple Public Source License 2.0,
 user space MIT; the user space was folded into this one repository upstream on 2026-10-25) at a pinned commit
-into the Debian chroot (`/root/hackios`) and runs their own scripts. iOS 16.5 (20F66) comes from
-Apple's CDN through their `sysimage/fetch.sh`, onto your phone only.
+into the Debian chroot (`/root/hackios`) and runs their own scripts. Pinned: `63fc2b4` (2026-11-06, HakiOS
+2.3.4 plus PRs #53/#54). Upstream no longer downloads iOS itself (their `sysimage/unpack.sh` takes an IPSW you
+have), so `hackios.sh` downloads the iOS 16.5 (20F66) IPSW from Apple's CDN onto your phone only, checks its
+SHA-256 and hands it to `sysimage/unpack.sh`. `HACKIOS_IPSW=<path>` uses an IPSW you already have instead.
+
+HakiOS 2.3.4's own changes (Metal, touch, the phone ports) are for the POCO X5 Pro. The QEMU path here uses their
+**prebuilt kernel**, which is still the 2026-10-25 build (`prebuilt/hakios-kernel`, the same binary as the old
+`prebuilt/mach.development.bcm2837`); what changes under QEMU is their loader (built here), their image build
+(`userland/build.sh`, `mkhighrate.py`) and their scripts (`qemu/run-darwin.sh`, `sysimage/unpack.sh`).
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.9.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.0.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
-Needs about 14 GB free storage while building and about 3 GB free RAM while iOS runs.
+Needs about 18 GB free storage for a first build (the 6.2 GB IPSW is deleted after unpacking) and about 3 GB free RAM while iOS runs.
 
 ## Steps
 
@@ -41,23 +48,21 @@ Needs about 14 GB free storage while building and about 3 GB free RAM while iOS 
 2. **Install HackiOS** — `hackios.sh setup`: packages (QEMU for aarch64, UEFI firmware, gcc, clang/lld),
    7-Zip 24.09 from [ip7z/7zip](https://github.com/ip7z/7zip) (checksum-verified; Debian's 7-Zip is too
    old to read APFS), the HakiOS repository at its pinned commit (an old two-repository checkout is cleaned up).
-3. **Download iOS 16.5 + build images (long)** — `hackios.sh build`: their `sysimage/fetch.sh`
-(7.4 GB download, resumes if interrupted; about 14 GB free space needed while it runs), their loader
-built from source (`xnuloader/build.sh`, clang + lld; lzfse is built for its device tree), then
+3. **Download iOS 16.5 + build images (long)** — `hackios.sh build`: the iOS 16.5 IPSW from Apple's CDN
+(6.2 GB, resumes if interrupted, SHA-256 checked; `HACKIOS_KEEP_IPSW=1` keeps it), unpacked by their
+`sysimage/unpack.sh` (about 18 GB free space at the peak). Upgrading from an older pin does not download it
+again: their `select-system.py` changed only in its comments, so the files already unpacked are kept. Then their
+loader built from source (`xnuloader/build.sh`, clang + lld), then
 `PREBUILT=1 REST=1 userland/build.sh` with their prebuilt kernel and programs (our `timesync` and `rootful`
 go in through their `EXTRA`) → `userland/root.apfs` and `userland/system.apfs` (2.5 GB). The boot job
 list asks configd for DHCP on `en0` (`net_test dhcp en0`, as their `rc.jobs.net` does): under QEMU
 the virtio card has no IOKit object, so iOS does not configure it by itself. `HACKIOS_NET=0` builds
 without it; `HACKIOS_JOBS=<file>` uses one of their `rc.jobs.*` lists instead.
-Before building, `hackios.sh` fixes four bugs in the pinned HackiOS commits (reported upstream; each
-fix is skipped once their code changes):
-1. `userland/build.sh` copies `drawable_test`, which `prebuilt/userland` lacks, so the build stops;
-2. `userland/build.sh` calls `timedatectl` under `set -e`, so it stops silently without systemd (a chroot);
-3. `userland/mkjobs.py` reuses the loop variable `name`, so all ~400 on-demand iOS jobs (configd,
-   mDNSResponder, trustd, nsurlsessiond, …) overwrite one file and none can start: no network;
-4. `xnuloader/loader.c` reads the fw_cfg DMA answer through a plain variable, so `-O1` folds the check
-   and the loader gives up on the 1125×2436 ramfb: black screen.
-4. **Boot iOS 16.5 (VNC, network)** — `hackios.sh run`: their `qemu/run-ios.sh`, display on VNC
+The bugs `hackios.sh` used to fix in their checkout (`drawable_test`, `timedatectl` without systemd, the
+`mkjobs.py` job names, the ramfb DMA read-back in `xnuloader/loader.c`) are all fixed upstream now. Before
+building it only makes its own changes: snapshot switches, the time zone, the host clock and ssh forward for the
+user network, and a 944×2048 ramfb panel (QEMU's VNC drops rows below 2048).
+4. **Boot iOS 16.5 (VNC, network)** — `hackios.sh run`: their `qemu/run-darwin.sh`, display on VNC
    `127.0.0.1:5900` (the built-in viewer opens by itself), `QEMU_NET=1`, 4 vCPUs, a 2-hour session
    (`HACKIOS_SECS`). TCG on the phone: the lock screen takes several minutes, and the screen dims after a
    while (tap to wake). **Power off VM** stops it.
@@ -213,11 +218,23 @@ instruction is translated in software (TCG). What helps:
 ## Scripts
 
 - `hackios.sh` — `setup` | `build` | `run` | `save` | `forget` | `stop` | `status` (env: `HACKIOS_DIR`, `HACKIOS_REF=latest`,
-  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_TROLLSTORE=0`, `TROLLSTORE_VERSION`, `HACKIOS_TIPAS`, `HACKIOS_ROOTFUL=0`, `HACKIOS_ROOTFUL_DIRS`).
+  `HACKIOS_SECS`, `HACKIOS_SMP`, `HACKIOS_RAM_GB`, `HACKIOS_NET=0`, `HACKIOS_JOBS`, `HACKIOS_SNAPSHOT=0`, `HACKIOS_TZ`, `HACKIOS_JB=0`, `HACKIOS_NEWTERM=0`, `NEWTERM_DEB`, `HACKIOS_TROLLSTORE=0`, `TROLLSTORE_VERSION`, `HACKIOS_TIPAS`, `HACKIOS_ROOTFUL=0`, `HACKIOS_ROOTFUL_DIRS`, `HACKIOS_SSH_KEY`, `HACKIOS_IPSW`, `HACKIOS_KEEP_IPSW=1`).
 - `timesync/` — `timesync.c` and its build for iOS (`timesync-arm64`, built with the theos toolchain and the
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
+
+## v2.10.0: HakiOS 2.3.4
+
+Pinned to hakios-xnu-kernel `63fc2b4` (2026-11-06: 2.3.4 plus the merged PRs #53 and #54). What changed for the
+QEMU path upstream: `sysimage/fetch.sh` became `sysimage/unpack.sh`, which takes your own IPSW and downloads
+nothing (so `hackios.sh` downloads the IPSW from Apple's CDN itself, or uses `HACKIOS_IPSW`);
+`qemu/run-ios.sh` became `qemu/run-darwin.sh` and the prebuilt kernel is `prebuilt/hakios-kernel`;
+`xnuloader/mkidentity.sh` builds lzfse correctly itself, so ios-tools no longer builds it; `userland/build.sh`
+adds `mkhighrate.py`; `hakios-metal/` is in the tree now, but `PREBUILT=1` does not build it. The repository
+checkout is forced (`git checkout -f`) so the files `hackios.sh` edits do not block an update.
+`tools/mkdatavol.py` (the HFS+ data volume) makes a fastboot image for the phone's `darwin` partition and is not
+used under QEMU.
 
 ## v2.9.0: current upstream HakiOS
 

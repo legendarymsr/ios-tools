@@ -5,14 +5,17 @@
 #
 # HackiOS is by OOSEX GANG (@oodze, @netusd, @wannqn, @hxfuxyyXD):
 #   https://github.com/oosexgang  ·  https://hackios-web.vercel.app  ·  https://t.me/oosexgangdevs
-# hackios-xnu-kernel is APSL 2.0, hackios-xnu-userland is MIT. Nothing of theirs is copied into
-# ios-tools: this script clones their repositories at the commits pinned below and runs their own
+# hakios-xnu-kernel is APSL 2.0 (kernel) and MIT (user space). Nothing of theirs is copied into
+# ios-tools: this script clones their repository at the commit pinned below and runs their own
 # scripts. HackiOS is not affiliated with, authorised or endorsed by Apple Inc.; no Apple files are
-# shipped -- their sysimage/fetch.sh downloads iOS 16.5 from Apple's CDN onto this phone.
+# shipped -- this script downloads the iOS 16.5 IPSW from Apple's CDN onto this phone (HakiOS itself
+# no longer downloads anything: their sysimage/unpack.sh takes an IPSW you have) and their
+# sysimage/unpack.sh unpacks it.
 #
-#   hackios.sh setup    packages, 7-Zip 24.09 (APFS needs 7-Zip 23+), both HackiOS repositories
-#   hackios.sh build    download iOS 16.5 (7.4 GB, resumable), build HackiOS's loader and the
-#                       images root.apfs + system.apfs (HackiOS's prebuilt kernel and programs)
+#   hackios.sh setup    packages, 7-Zip 24.09 (APFS needs 7-Zip 23+), the HakiOS repository
+#   hackios.sh build    download the iOS 16.5 IPSW (6.2 GB, resumable, checked against its SHA-256)
+#                       and unpack it, build HackiOS's loader and the images root.apfs + system.apfs
+#                       (HackiOS's prebuilt kernel and programs)
 #   hackios.sh run      boot it: QEMU virt, display on VNC 127.0.0.1:5900, network on (QEMU_NET=1)
 #   hackios.sh save     save the running iOS to a snapshot (once it is on the home screen): the next
 #                       run resumes it in seconds instead of booting for many minutes (QEMU 8.2+)
@@ -44,7 +47,9 @@
 #      "/Applications /Library /usr /bin /sbin"),
 #      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
 #      HACKIOS_FBSCALE=2 (render the UI at 2x and upscale: less CPU per frame, a bit softer; it did not
-#      change the frame rate in testing, so the default is native 3).
+#      change the frame rate in testing, so the default is native 3),
+#      HACKIOS_IPSW=<path> (use this iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw instead of downloading
+#      it), HACKIOS_KEEP_IPSW=1 (keep the downloaded IPSW after unpacking; it is deleted by default).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -54,7 +59,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 [ -f "$HERE/.hackios-env" ] && . "$HERE/.hackios-env" || true
 KERNEL_URL=https://github.com/oosexgang/hakios-xnu-kernel.git    # kernel + user space in one repository since 2026-10-25
-KERNEL_PIN=88513176b1e96ecf0b764cd62c6f4e6ac71345e3     # 2026-10-26 "Update README.md"
+KERNEL_PIN=63fc2b4633bac3af8e57dadab9f5a8d4cb940438     # 2026-11-06 HakiOS 2.3.4 + PRs #53/#54 (main)
+# the IPSW HakiOS's sysimage/unpack.sh is made for (it refuses any other size)
+IPSW_NAME=iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw
+IPSW_URL=https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-85130/6AB0D10A-8AF9-4F6C-8CF5-A1B315CABE88/$IPSW_NAME
+IPSW_SIZE=6165698198
+IPSW_SHA256=c1091c401f67e3aa7cdfeb2cc19e6c79be3c957aae4e097a019e9ccea07d52f2
 SEVENZIP_VER=2409
 declare -A SEVENZIP_SHA=(
   [arm64]=fbe331697c9417bbc06fc92d3f4576dca6a5a1442fad7ae810304446a9153e2c
@@ -92,16 +102,32 @@ install_7zip() {
 checkout() { # checkout DIR URL PIN [GIT_DIR]: the pinned commit (or main with HACKIOS_REF=latest)
   local d="$1" url="$2" pin="$3"
   if [ "${HACKIOS_REF:-pinned}" = latest ]; then
-    git -C "$d" fetch -q --depth 1 origin main && git -C "$d" checkout -q FETCH_HEAD
+    git -C "$d" fetch -q --depth 1 origin main && git -C "$d" checkout -q -f FETCH_HEAD
   else
-    git -C "$d" fetch -q --depth 1 origin "$pin" && git -C "$d" checkout -q "$pin"
+    # -f: fix_checkout's edits to their files are dropped here and made again at the next build
+    git -C "$d" fetch -q --depth 1 origin "$pin" && git -C "$d" checkout -q -f "$pin"
   fi
+}
+
+# select_code FILE: a hash of select-system.py's code without its comments and docstrings ("" if absent)
+select_code() {
+  [ -f "$1" ] || return 0
+  python3 - "$1" <<'PYSEL' 2>/dev/null || true
+import ast, hashlib, sys
+tree = ast.parse(open(sys.argv[1]).read())
+for node in ast.walk(tree):
+    body = getattr(node, "body", None)
+    if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body.pop(0)
+print(hashlib.sha256(ast.dump(tree).encode()).hexdigest())
+PYSEL
 }
 
 do_setup() {
   credit
-  local need_gb=14 have; have=$(free_gb "$(dirname "$DIR")")
-  [ -n "$have" ] && [ "$have" -lt "$need_gb" ] && log "WARNING: only ${have} GB free; download + images need about ${need_gb} GB"
+  local need_gb=18 have; have=$(free_gb "$(dirname "$DIR")")
+  [ -n "$have" ] && [ "$have" -lt "$need_gb" ] && log "WARNING: only ${have} GB free; the IPSW + unpacking + images need about ${need_gb} GB at the peak (about 8 GB afterwards)"
   log "installing packages (git, python3, gcc, QEMU for aarch64, UEFI firmware)"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q || true
@@ -126,7 +152,16 @@ do_setup() {
     log "cloning hackios-xnu-kernel into $DIR"
     git init -q "$DIR" && git -C "$DIR" remote add origin "$KERNEL_URL"
   fi
+  # what sysimage/select-system.py chose is what sysimage/rootfs holds; their build refuses a select-system.py
+  # newer than the extraction. When the new one differs only in its comments (2026-11-06 against 2026-10-26:
+  # "iOS" became "Darwin"), the files already unpacked are kept instead of downloading the IPSW again.
+  local sel_before=; sel_before=$(select_code "$DIR/sysimage/select-system.py")
   checkout "$DIR" "$KERNEL_URL" "$KERNEL_PIN"
+  if [ -f "$DIR/sysimage/.done-rootfs" ] && [ -n "$sel_before" ] && [ "$DIR/sysimage/select-system.py" -nt "$DIR/sysimage/.done-rootfs" ] \
+     && [ "$(select_code "$DIR/sysimage/select-system.py")" = "$sel_before" ]; then
+    touch "$DIR/sysimage/.done-rootfs"
+    log "sysimage/select-system.py changed only in its comments: the unpacked iOS 16.5 files are kept"
+  fi
   # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
   if [ -d "$DIR/.userland.git" ]; then
     log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
@@ -137,22 +172,16 @@ do_setup() {
   log "setup done - next: step 3 (download iOS 16.5 + build the images)"
 }
 
-# Fixes to HackiOS's checkout (pinned commits), each applied once; report them upstream:
-#  - userland/build.sh copies obj/drawable_test, which prebuilt/userland does not have (PREBUILT=1 stops)
-#  - userland/build.sh asks timedatectl for the time zone under set -e; without systemd (this chroot)
-#    the build stops there without a message
-#  - userland/mkjobs.py reuses the loop variable `name` for RWA_PACKED16, so the ~400 on-demand iOS
-#    jobs (REST=1: configd, mDNSResponder, trustd, nsurlsessiond, ...) all overwrite one file named
-#    RWA_PACKED16 and none of them can start: no DHCP, no DNS, Safari "not connected to the Internet"
-#  - (not bugs: two switches for snapshots, default unchanged) qemu/run.sh mounts the ESP read-write
-#    and qemu/run-ios.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
+# Changes to HackiOS's checkout (pinned commit), each applied once. The bugs once fixed here are fixed
+# upstream (the timedatectl stop, the RWA_PACKED16 job names, drawable_test; and since 2026-10-27 the
+# ramfb DMA read-back, through a volatile), so they are no longer patched. What is left is ours:
+#  - two switches for snapshots, default unchanged: qemu/run.sh mounts the ESP read-write and
+#    qemu/run-darwin.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
 #    QEMU_ESP_RW= QEMU_ESP_RO=1 mounts it read-only and QEMU_SOUND=0 leaves the sound device out
-#  - (not bugs, ours) userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none
-#    (the launcher passes Android's), copies obj/timesync into the image when it is there, and
-#    qemu/run-ios.sh passes QEMU_NET_EXTRA to the user network (the host's clock for timesync)
-#  - xnuloader/loader.c reads back the fw_cfg DMA answer through a plain variable, so -O1 folds the
-#    check and the prebuilt loader.efi always gives up on the 1125x2436 ramfb: black screen
-#  - (not a bug, ours) QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
+#  - userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none (the launcher
+#    passes Android's), and qemu/run-darwin.sh passes QEMU_NET_EXTRA to the user network (the
+#    host's clock for timesync, the ssh port)
+#  - QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
 #    cut iOS's dock off in the launcher's viewer. The loader makes the ramfb PANEL 944x2048 (<=2048,
 #    iOS's aspect); iOS still renders 1125x2436 and the kernel scales it onto the panel, exactly as it
 #    scales to the real phone's 1080x2400, so the UI is unchanged
@@ -161,19 +190,16 @@ fix_checkout() {
 import pathlib, sys
 d = pathlib.Path(sys.argv[1])
 fixes = [
-  ("userland/build.sh",
-   "zone=$(timedatectl show -p Timezone --value 2>/dev/null); ",
-   "zone=$(timedatectl show -p Timezone --value 2>/dev/null || true); "),
   ("qemu/run.sh",
    "-drive file=fat:rw:esp,format=raw,if=virtio ",
    "-drive file=fat:${QEMU_ESP_RW-rw:}esp,format=raw,if=virtio${QEMU_ESP_RO:+,readonly=on} "),
-  ("qemu/run-ios.sh",
+  ("qemu/run-darwin.sh",
    "if qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then",
    "if [ \"${QEMU_SOUND:-1}\" != 0 ] && qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then"),
   ("userland/build.sh",
    "zone=${zone:-UTC}",
    "zone=${zone:-${HACKIOS_TZ:-UTC}}"),
-  ("qemu/run-ios.sh",
+  ("qemu/run-darwin.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
   ("xnuloader/loader.c",
@@ -191,12 +217,6 @@ fixes = [
   ("xnuloader/loader.c",
    "\tSCREEN.width = PHONE_WIDTH;\n\tSCREEN.height = PHONE_HEIGHT;\n\tSCREEN.stride = PHONE_WIDTH * 4;",
    "\tSCREEN.width = PANEL_WIDTH;\n\tSCREEN.height = PANEL_HEIGHT;\n\tSCREEN.stride = PANEL_WIDTH * 4;"),
-  ("xnuloader/loader.c",
-   "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n\tif (dma.control != 0) {\n",
-   "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
-   "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n"
-   "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
-   "\tif (*(volatile uint32_t *)&dma.control != 0) {\n"),
 ]
 for f, old, new in fixes:
     p = d / f; s = p.read_text()
@@ -553,28 +573,52 @@ unbundle_trollstore() {
   sed -i '/^Package: com\.opa334\.trollstorehelper$/,/^$/d' "$root/var/jb/Library/dpkg/status" 2>/dev/null || true
 }
 
+# get_ipsw: print the path of the iOS 16.5 IPSW: HACKIOS_IPSW if given, else one downloaded from Apple's
+# CDN into sysimage/ (resumed when a download broke off), checked by size and SHA-256
+get_ipsw() {
+  if [ -n "${HACKIOS_IPSW:-}" ]; then
+    [ -f "$HACKIOS_IPSW" ] || die "HACKIOS_IPSW=$HACKIOS_IPSW: no such file"
+    log "IPSW: $HACKIOS_IPSW" >&2; echo "$HACKIOS_IPSW"; return
+  fi
+  local f="$DIR/sysimage/$IPSW_NAME"
+  if [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" != "$IPSW_SIZE" ]; then
+    log "downloading the iOS 16.5 (20F66) IPSW from Apple's CDN (6.2 GB, resumes if interrupted)" >&2
+    local n=0
+    until [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" = "$IPSW_SIZE" ]; do
+      n=$((n + 1)); [ $n -le 20 ] || die "the IPSW download did not finish (run step 3 again to resume)"
+      curl -fL --retry 5 --retry-delay 5 -C - -o "$f" "$IPSW_URL" >&2 || sleep 5
+      [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -le "$IPSW_SIZE" ] || { rm -f "$f"; log "oversized download: starting over" >&2; }
+    done
+  fi
+  if [ ! -f "$f.ok" ]; then
+    log "checking the IPSW (SHA-256)" >&2
+    echo "$IPSW_SHA256  $f" | sha256sum -c --quiet - >&2 || { rm -f "$f"; die "the IPSW has the wrong checksum: deleted, run step 3 again"; }
+    touch "$f.ok"
+  fi
+  echo "$f"
+}
+
 do_build() {
   credit
-  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/fetch.sh" ] || die "not set up yet (or the old layout) - run step 2 first"
+  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/unpack.sh" ] || die "not set up yet (or an older HakiOS checkout) - run step 2 first"
   command -v 7z >/dev/null || die "7z missing - run step 2 first"
   cd "$DIR"
-  if [ ! -f sysimage/.done-rootfs ] || [ ! -f sysimage/.done-cryptex ] || [ ! -f sysimage/.done-cryptex-app ]; then
-    log "downloading iOS 16.5 (20F66) from Apple's CDN and extracting it (7.4 GB, resumes if interrupted)"
-    bash sysimage/fetch.sh
+  # their sysimage/unpack.sh needs the IPSW whenever something is still to be unpacked: the system's files,
+  # or the device tree the loader's identity is made from (xnuloader/mkidentity.sh, when identity.h is not there)
+  if [ ! -f sysimage/.done-rootfs ] || [ ! -f sysimage/.done-cryptex ] || [ ! -f sysimage/.done-cryptex-app ] \
+     || [ sysimage/select-system.py -nt sysimage/.done-rootfs ] \
+     || { [ ! -f xnuloader/identity.h ] && [ ! -f sysimage/DeviceTree.d22ap.im4p ]; }; then
+    local ipsw; ipsw=$(get_ipsw)
+    log "unpacking iOS 16.5 from the IPSW (HakiOS's sysimage/unpack.sh)"
+    bash sysimage/unpack.sh "$ipsw" || die "sysimage/unpack.sh failed (see above)"
+    if [ "$ipsw" = "$DIR/sysimage/$IPSW_NAME" ] && [ "${HACKIOS_KEEP_IPSW:-0}" != 1 ]; then
+      rm -f "$ipsw" "$ipsw.ok"; log "the downloaded IPSW is deleted (HACKIOS_KEEP_IPSW=1 keeps it)"
+    fi
   else
-    log "iOS 16.5 files already extracted"
+    log "iOS 16.5 files already unpacked"
   fi
   fix_checkout
-  # their xnuloader/mkidentity.sh builds lzfse with `make lzfse`, a target lzfse's Makefile does not
-  # have; build it with the default target into the place mkidentity.sh looks first
-  if ! command -v lzfse >/dev/null && [ ! -x "$DIR/xnu-deps/host/bin/lzfse" ]; then
-    log "building lzfse (BSD, github.com/lzfse/lzfse) for the loader's device tree"
-    local lz; lz=$(mktemp -d)
-    git clone -q --depth 1 https://github.com/lzfse/lzfse "$lz/lzfse" && make -s -C "$lz/lzfse" >/dev/null \
-      && mkdir -p "$DIR/xnu-deps/host/bin" && cp "$lz/lzfse/build/bin/lzfse" "$DIR/xnu-deps/host/bin/" \
-      || log "WARNING: lzfse did not build"
-    rm -rf "$lz"
-  fi
+  # (lzfse for the device tree: their xnuloader/mkidentity.sh builds it right itself since 2026-11-03)
   log "building HackiOS's loader (xnuloader/loader.efi)"
   bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
   # the jailbreak, HackiOS's own: tools/mk-jb.sh fetches the Procursus rootless bootstrap, Sileo and
@@ -700,7 +744,7 @@ qemu_ok_for_snapshots() {
 snap_key() {
   ( cd "$DIR" && qemu-system-aarch64 --version | head -1
     echo "smp=${HACKIOS_SMP:-4} ram=${HACKIOS_RAM_GB:-7} net=${HACKIOS_NET:-1} fbscale=${HACKIOS_FBSCALE:-3} cmdline=${HACKIOS_CMDLINE:-}"
-    stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi prebuilt/mach.development.bcm2837 2>/dev/null
+    stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi hakios-kernel prebuilt/hakios-kernel 2>/dev/null
   ) | sha256sum | cut -d' ' -f1
 }
 # qmp COMMAND-JSON...: send QMP commands to the running QEMU, print each answer; `wait-migration`
@@ -791,7 +835,7 @@ do_run() {
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} $(fbscale_arg) ${HACKIOS_CMDLINE:-}" \
-    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:"${HACKIOS_VNC:-0}" "${extra[@]}" || true
+    bash qemu/run-darwin.sh "$secs" -display vnc=127.0.0.1:"${HACKIOS_VNC:-0}" "${extra[@]}" || true
   wait
   if [ -f "$DIR/qemu/.snapshot-failed" ]; then
     rm -f "$DIR/qemu/.snapshot-failed" "$snap" "$snap.key"
@@ -836,7 +880,7 @@ do_stop() {
 
 do_status() {
   credit
-  [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (step 2)"
+  [ -d "$DIR/.git" ] && log "installed: HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD), tree version $(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3} END{if (v != "") print v"."p"."s; else print "?"}' "$DIR/VERSION" 2>/dev/null); QEMU boots their prebuilt/hakios-kernel" || log "not installed (step 2)"
   [ -f "$DIR/sysimage/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
   [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (step 3)"
   [ -f "$(snap_file)" ] && log "snapshot: saved $(date -r "$(snap_file)" '+%Y-%m-%d %H:%M'), $(du -h "$(snap_file)" | cut -f1)" || log "snapshot: none"
