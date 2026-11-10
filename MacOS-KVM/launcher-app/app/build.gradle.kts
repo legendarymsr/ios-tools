@@ -9,8 +9,8 @@ android {
         applicationId = "com.macoskvm.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 6
+        versionName = "1.1.0"
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -25,6 +25,19 @@ android {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
+
+// The app runs its own copies of the module scripts (assets/payload); keep
+// them identical to the ones in MacOS-KVM/.
+val syncPayload by tasks.registering(Copy::class) {
+    val mod = rootProject.file("..")
+    from(mod) {
+        include("setup-debian-chroot.sh", "install-qemu-x86.sh", "setup-osx-kvm.sh",
+                "macos-versions.sh", "fetch-macos.sh", "boot-macos.sh",
+                "xz-arm64")
+    }
+    into(file("src/main/assets/payload"))
+}
+tasks.named("preBuild") { dependsOn(syncPayload) }
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")

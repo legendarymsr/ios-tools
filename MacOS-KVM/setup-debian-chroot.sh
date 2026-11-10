@@ -250,7 +250,7 @@ mkdir -p "$ROOTFS/etc" "$ROOTFS/root" "$ROOTFS/usr/local/bin" \
 chmod 1777 "$ROOTFS/tmp" 2>/dev/null || true
 
 echo "[*] Copying helper scripts into chroot /root (if present)"
-for f in install-qemu-x86.sh setup-osx-kvm.sh fetch-sonoma.sh boot-macos14.sh; do
+for f in install-qemu-x86.sh setup-osx-kvm.sh macos-versions.sh fetch-macos.sh boot-macos.sh; do
   [ -f "$HERE/$f" ] && cp -f "$HERE/$f" "$ROOTFS/root/" 2>/dev/null || true
 done
 [ -x "$HERE/xz-arm64" ] && cp -f "$HERE/xz-arm64" "$ROOTFS/usr/local/bin/xz" 2>/dev/null || true

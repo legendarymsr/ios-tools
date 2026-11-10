@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">macOS KVM</string>
-    <string name="instructions">macOS 14 (Sonoma) under QEMU on this phone, via OSX-KVM.\nGuest is x86_64 on an aarch64 host → TCG only, NO KVM. Expect it to be VERY slow; a full install may not finish.\nFlow: Debian chroot → install qemu-system-x86 → stage OSX-KVM → fetch Sonoma recovery → boot (VNC).\nNo Apple images are shipped; you download them on-device. Apple EULA applies.</string>
+    <string name="instructions">macOS 26 (Tahoe) under QEMU on this phone, via OSX-KVM. macOS 14 (Sonoma) is still available from the Optional steps.
+Guest is x86_64 on an aarch64 host → TCG only, NO KVM. Expect it to be VERY slow; a full install may not finish.
+Flow: Debian chroot → install qemu-system-x86 → stage OSX-KVM → fetch Tahoe recovery → boot (VNC).
+No Apple images are shipped; you download them on-device. Apple EULA applies.</string>
 </resources>

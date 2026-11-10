@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # setup-osx-kvm.sh
 # Stage OSX-KVM assets (OVMF, OpenCore, fetch script) into the working dir and
@@ -41,6 +42,10 @@ cp -f "$ASSETS/config.plist"               "$WORKDIR/" 2>/dev/null || true
 cp -f "$ASSETS/fetch-macOS-v2.py"          "$WORKDIR/"
 cp -f "$ASSETS/CREDITS.md"                 "$WORKDIR/" 2>/dev/null || true
 cp -f "$ASSETS/OSX-KVM-README.md"          "$WORKDIR/" 2>/dev/null || true
+# Version table used by fetch-macos.sh / boot-macos.sh.
+if [ -f "$SCRIPT_DIR/macos-versions.sh" ]; then
+  cp -f "$SCRIPT_DIR/macos-versions.sh" "$WORKDIR/"
+fi
 chmod 0755 "$WORKDIR/fetch-macOS-v2.py"
 
 # Create an empty qcow2 HDD for the macOS install if missing.
@@ -61,5 +66,5 @@ fi
 
 echo
 echo "[done] OSX-KVM tree ready at $WORKDIR"
-echo "       Next: fetch macOS 14 recovery (Fetch Sonoma), then Boot macOS 14."
+echo "       Next: fetch the macOS 26 (Tahoe) recovery, then boot it."
 ls -lh "$WORKDIR" | sed 's/^/    /'

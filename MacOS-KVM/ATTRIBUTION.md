@@ -13,7 +13,7 @@ files; keep them intact.
 
 ## Apple software
 
-macOS recovery images downloaded by `fetch-sonoma.sh` are Apple software and
+macOS recovery images downloaded by `fetch-macos.sh` are Apple software and
 are subject to [Apple's software license agreement](https://www.apple.com/legal/sla/).
 This project does **not** redistribute any Apple macOS images. You must be
 legally entitled to use macOS (typically by owning a Mac).

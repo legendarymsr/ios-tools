@@ -1,16 +1,49 @@
-# MacOS-KVM — macOS 14 (Sonoma) QEMU VM on a rooted Android phone
+# MacOS-KVM — macOS 26 (Tahoe) QEMU VM on a rooted Android phone
 
 KernelSU/Magisk flashable **module** that installs a tappable **"macOS KVM"**
 launcher app and stages an [OSX-KVM](https://github.com/kholia/OSX-KVM)-based
-macOS 14 (Sonoma) QEMU stack on the phone.
+macOS QEMU stack on the phone. macOS 26 (Tahoe), the last macOS release for
+Intel Macs, is the default; macOS 14 (Sonoma) is still available.
 
 Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.0.4.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.0.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.0: macOS 26 (Tahoe)
+
+- **Tahoe is the default.** Step 4 fetches the macOS 26 recovery and step 5
+  boots it. Sonoma has its own **Optional: Fetch / Boot macOS 14 (Sonoma)**
+  steps. Each release keeps its own image (`BaseSystem-tahoe.img`,
+  `BaseSystem-sonoma.img`), so switching does not re-download.
+  From a shell: `MACOS_VERSION=tahoe|sequoia|sonoma` for `fetch-macos.sh`
+  and `boot-macos.sh`.
+- **Recovery download fixed.** v1.0.x ran `fetch-macOS-v2.py --action download
+  --shortname sonoma`, but the script ignores `--shortname` when `--action` is
+  given, so it fetched the recovery Apple serves for the script's default
+  board. Asking Apple's recovery server for that board returns the same product
+  (`696-28424`) as OSX-KVM's Sequoia entry, not Sonoma's (`696-08090`). The
+  scripts now pass the board ID, MLB and os type from OSX-KVM's table
+  (Tahoe: `Mac-CFF7D910A743CAAF`, `-os latest`, product `140-93589` when
+  checked on 2026-11-10). The old `BaseSystem.img` is no longer used; the fetch
+  step tells you its size so you can delete it.
+- **CPU model.** Tahoe (and Sequoia) boot with `Skylake-Client,-hle,-rtm`, the
+  line upstream OSX-KVM's `OpenCore-Boot.sh` enables for Sequoia and Tahoe.
+  Sonoma keeps `Haswell-noTSX`. Override with `CPU_MODEL=...`.
+- **OpenCore / OVMF.** Unchanged from v1.0.4: they were already the files from
+  OSX-KVM commit `4c378a4` ("Support for macOS Tahoe"); the OpenCore picker
+  shows `REL-106 2025-11-03`.
+- The scripts were renamed: `fetch-sonoma.sh` → `fetch-macos.sh`,
+  `boot-macos14.sh` → `boot-macos.sh`, plus `macos-versions.sh` (release
+  table). **Re-run step 3** after flashing so the new files are staged.
+- On an x86_64 Linux host with a working `/dev/kvm`, `boot-macos.sh` uses KVM
+  (`ACCEL=tcg|kvm` overrides). On the phone it is always TCG.
+- `pack-release.sh` builds the module zip and refuses to package an APK whose
+  bundled scripts differ from the ones in this folder; Gradle copies them into
+  the app on every build.
 
 ## Built-in VNC viewer (v1.0.4)
 
@@ -75,7 +108,7 @@ acceleration across architectures. QEMU runs the guest under **TCG** (pure
 software emulation). That means:
 
 - Booting to the OpenCore menu may take many minutes.
-- A full Sonoma install under TCG on a phone is **unlikely to be practical**
+- A full macOS install under TCG on a phone is **unlikely to be practical**
   (hours to days, high chance of timeouts / watchdog kills).
 - This module wires up the real OSX-KVM stack so you can try it; it does **not**
   claim a usable daily-driver Hackintosh on the Flip 4.
@@ -98,12 +131,12 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 | OpenCore bootloader | `payload/assets/OpenCore.qcow2` + `config.plist` | From OSX-KVM |
 | `fetch-macOS-v2.py` | `payload/assets/` | From OSX-KVM / Acidanthera macrecovery |
 | CREDITS / upstream README | `payload/assets/` | Attribution kept intact |
-| Apple BaseSystem / IPSW | **not shipped** | Downloaded on-device by step 4 |
+| Apple BaseSystem / IPSW | **not shipped** | Downloaded on-device by step 4 (or the optional Sonoma step) |
 
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.0.4.zip`, reboot.
+   `macos-kvm-launcher-v1.1.0.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -120,12 +153,16 @@ On flash, `customize.sh` also stages everything under
    (Debian's prebuilt glibc binary).
 3. **Stage OSX-KVM assets + create HDD** — copies OVMF/OpenCore into
    `/data/local/osx-kvm` and creates a 64G `mac_hdd_ng.img` qcow2.
-4. **Fetch macOS 14 (Sonoma) recovery** — runs `fetch-macOS-v2.py --shortname
-   sonoma` and converts `BaseSystem.dmg` → `BaseSystem.img` with `dmg2img`.
-   Needs network. Apple EULA applies.
-5. **Boot macOS 14 (TCG / VNC :5900)** — starts `qemu-system-x86_64` with
-   `-accel tcg,thread=multi` (no `-enable-kvm`). The built-in viewer opens on
+4. **Fetch macOS 26 (Tahoe) recovery** — runs `fetch-macOS-v2.py --action
+   download --board-id Mac-CFF7D910A743CAAF --os-type latest` (Apple checks
+   the image against its chunklist) and converts `BaseSystem.dmg` →
+   `BaseSystem-tahoe.img` with `dmg2img`. Needs network. Apple EULA applies.
+5. **Boot macOS 26 (Tahoe) (TCG / VNC :5900)** — starts `qemu-system-x86_64`
+   with `-accel tcg,thread=multi` and `-cpu Skylake-Client,-hle,-rtm,...`. The built-in viewer opens on
    its own once `127.0.0.1:5900` is up (or tap **Open VNC viewer**).
+
+**Optional: Fetch / Boot macOS 14 (Sonoma)** do the same for Sonoma
+(board `Mac-827FAC58A8FDFA22`, CPU `Haswell-noTSX`).
 
 ### Display
 
@@ -139,29 +176,41 @@ you run an X server (e.g. Termux-X11).
   Android). Override with `ALLOCATED_RAM=4096`.
 - Default HDD is **64G** sparse qcow2 under `/data/local/osx-kvm/mac_hdd_ng.img`.
   Make sure you have free space on `userdata` before fetching + installing.
-- BaseSystem recovery alone is ~700 MB–1 GB download.
+- A recovery image is roughly 1 GB or more to download, plus the converted
+  `.img` (not measured for Tahoe; see below).
 
 ## Verified vs not
 
-**Verified on the build host:**
+**v1.1.0, checked on the build host (x86_64 Debian, 2026-11-10):**
 
-- Launcher APK assembles (`assembleDebug`).
-- Module zip has `module.prop` at its root, valid Magisk/KernelSU layout
-  (`META-INF/com/google/android/{update-binary,updater-script}`, `customize.sh`,
-  `service.sh`, `app/`, `payload/`).
-- All shell scripts pass `bash -n`.
-- Bundled OVMF/OpenCore/fetch script are present inside the zip.
-- No Apple macOS images are in the zip or the git tree.
+- Upstream facts: OSX-KVM `fetch-macOS-v2.py` (commit `4c378a4`) lists Tahoe
+  as board `Mac-CFF7D910A743CAAF`, os `latest`; acidanthera's
+  `recovery_urls.txt` uses the same. Upstream `OpenCore-Boot.sh` uses
+  `Skylake-Client,-hle,-rtm` for Sequoia and Tahoe.
+- Apple's recovery server answers that board/os query with product
+  `140-93589`.
+- The bundled OVMF/OpenCore/fetch script are byte-identical to OSX-KVM
+  `4c378a4`.
+- `boot-macos.sh` under TCG (QEMU 10.0.13) with the Tahoe CPU model and the
+  Sonoma CPU model reaches the OpenCore picker (OpenCore `REL-106`). This was
+  with a blank placeholder recovery image, so only the EFI entry shows.
+- `fetch-macos.sh` passes the right board/MLB/os type for tahoe, sequoia and
+  sonoma (checked with a stub downloader), keeps existing images, rejects
+  unknown versions.
+- APK builds, is signed with the same key as v1.0.4, and carries the same
+  scripts as this folder; module zip layout as before.
 
-**Not verified (needs the phone):**
+**Not verified:**
 
-- Live Debian download / `apt install qemu-system-x86` on device.
-- Fetching Sonoma recovery from Apple's CDN on device.
-- Actually booting OpenCore / macOS under TCG on the Flip 4.
-- Whether TCG gets far enough to be useful at all.
-
-Treat on-device steps as "should work given root + network + disk", not
-"tested here".
+- Downloading and converting the real Tahoe `BaseSystem.dmg`: the build
+  host's network blocks plain HTTP, the image URLs Apple returns are plain
+  HTTP, and the same paths over HTTPS fail (certificate mismatch / 404). So
+  the image's exact 26.x version and size were not seen.
+- Booting the Tahoe recovery to the installer, on any host.
+- Anything on the phone (Debian chroot, qemu install, fetch, boot under TCG).
+- QEMU 7.2 (Debian bookworm, used in the phone's chroot) was not run; its
+  changelog lists TCG support for AVX/AVX2, which Skylake-Client needs.
+- Whether TCG on the phone gets far enough to be useful at all.
 
 ## License / attribution
 

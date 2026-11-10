@@ -3,15 +3,28 @@ package com.macoskvm.launcher;
 
 public final class Steps {
     public static final String BANNER =
-        "macOS KVM launcher — macOS 14 (Sonoma) via OSX-KVM on Android.\n"
-      + "Host is aarch64, guest is x86_64 → TCG only (NO KVM). Expect VERY slow.\n"
-      + "Based on https://github.com/kholia/OSX-KVM — attribution in CREDITS.md.\n"
-      + "No Apple images are shipped; Fetch Sonoma downloads recovery on-device.\n"
+        "macOS KVM launcher - macOS 26 (Tahoe) via OSX-KVM on Android (macOS 14 Sonoma also available).\n"
+      + "Host is aarch64, guest is x86_64 -> TCG only (NO KVM). Expect VERY slow.\n"
+      + "Based on https://github.com/kholia/OSX-KVM - attribution in CREDITS.md.\n"
+      + "No Apple images are shipped; the Fetch steps download the recovery on-device.\n"
       + "Apple EULA applies. You should legally own a Mac to use macOS.";
 
     public static final class Step {
         public final String label; public final String command;
         public Step(String l, String c) { label = l; command = c; }
+    }
+
+    private static final String COPY_VERSIONS =
+        "cp {P}/macos-versions.sh /data/local/debian/root/ 2>/dev/null; ";
+
+    private static String fetch(String version) {
+        return COPY_VERSIONS + "cp {P}/fetch-macos.sh /data/local/debian/root/ 2>/dev/null; "
+             + "sh /data/local/enter-debian.sh 'MACOS_VERSION=" + version + " bash /root/fetch-macos.sh'";
+    }
+
+    private static String boot(String version) {
+        return COPY_VERSIONS + "cp {P}/boot-macos.sh /data/local/debian/root/ 2>/dev/null; "
+             + "sh /data/local/enter-debian.sh 'MACOS_VERSION=" + version + " bash /root/boot-macos.sh'";
     }
 
     public static final Step[] STEPS = new Step[] {
@@ -23,14 +36,12 @@ public final class Steps {
         new Step("3. Stage OSX-KVM assets + create HDD",
             "ASSETS=/data/local/osx-kvm/assets WORKDIR=/data/local/osx-kvm "
           + "sh {P}/setup-osx-kvm.sh"),
-        new Step("4. Fetch macOS 14 (Sonoma) recovery",
-            "cp {P}/fetch-sonoma.sh /data/local/debian/root/ 2>/dev/null; "
-          + "sh /data/local/enter-debian.sh 'bash /root/fetch-sonoma.sh'"),
-        new Step("5. Boot macOS 14 (TCG / VNC :5900)",
-            "cp {P}/boot-macos14.sh /data/local/debian/root/ 2>/dev/null; "
-          + "sh /data/local/enter-debian.sh 'bash /root/boot-macos14.sh'"),
+        new Step("4. Fetch macOS 26 (Tahoe) recovery", fetch("tahoe")),
+        new Step("5. Boot macOS 26 (Tahoe) (TCG / VNC :5900)", boot("tahoe")),
+        new Step("Optional: Fetch macOS 14 (Sonoma) recovery", fetch("sonoma")),
+        new Step("Optional: Boot macOS 14 (Sonoma) (TCG / VNC :5900)", boot("sonoma")),
         new Step("Show boot script (first 40 lines)",
-            "sed -n '1,40p' {P}/boot-macos14.sh"),
+            "sed -n '1,40p' {P}/boot-macos.sh"),
     };
     private Steps() {}
 }
