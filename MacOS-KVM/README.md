@@ -9,9 +9,25 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.1.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.2.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.2: recovery check works without a terminal
+
+- Fixed step 4 ending with `Image verification failed. ([Errno 25]
+  Inappropriate ioctl for device)` after a complete download. OSX-KVM's
+  `fetch-macOS-v2.py` sizes its chunk progress line with
+  `os.get_terminal_size()` in `verify_image()`, which raises ENOTTY when there
+  is no terminal (the app's log pane). The module's copy now uses
+  `shutil.get_terminal_size()`, which falls back to 80 columns, the same as
+  acidanthera's macrecovery.py (`patches/fetch-macOS-v2-no-tty.patch`). The
+  chunklist signature and per-chunk SHA-256 checks are unchanged.
+- An earlier complete download in `/data/local/osx-kvm/.dl-<version>/` is
+  verified and converted instead of downloaded again. It is downloaded again
+  only if that check fails.
+- Step 4 picks up the fixed `fetch-macOS-v2.py` from the flashed module by
+  itself; step 3 does not need to be run again.
 
 ## v1.1.1: QEMU from bookworm-backports
 
@@ -153,7 +169,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.1.zip`, reboot.
+   `macos-kvm-launcher-v1.1.2.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)

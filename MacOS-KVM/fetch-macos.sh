@@ -26,6 +26,14 @@ else
 fi
 cd "$WORKDIR"
 
+# The module (customize.sh) stages a new fetch-macOS-v2.py in assets/ on
+# every flash; use it even if step 3 was not run again.
+if [ -f assets/fetch-macOS-v2.py ] && ! cmp -s assets/fetch-macOS-v2.py fetch-macOS-v2.py; then
+  echo "[*] Updating fetch-macOS-v2.py from the module's assets"
+  cp -f assets/fetch-macOS-v2.py fetch-macOS-v2.py
+  chmod 0755 fetch-macOS-v2.py
+fi
+
 if [ ! -f fetch-macOS-v2.py ]; then
   echo "ERROR: fetch-macOS-v2.py missing in $WORKDIR - run step 3 (Stage OSX-KVM assets) first." >&2
   exit 1
@@ -50,19 +58,50 @@ if [ -f BaseSystem.img ]; then
 fi
 
 DL="$WORKDIR/.dl-$MACOS_VERSION"
-rm -rf "$DL"
-mkdir -p "$DL"
-echo "[*] Fetching $MACOS_NAME recovery (board $MACOS_BOARD, os=$MACOS_OS_TYPE)"
-python3 fetch-macOS-v2.py \
-  --action download \
-  --board-id "$MACOS_BOARD" \
-  --mlb "$MACOS_MLB" \
-  --os-type "$MACOS_OS_TYPE" \
-  --outdir "$DL" \
-  --basename BaseSystem
-# fetch-macOS-v2.py checks the image against Apple's chunklist and exits
-# non-zero on a mismatch, so reaching this point means a verified image.
-[ -s "$DL/BaseSystem.dmg" ] || { echo "ERROR: BaseSystem.dmg not downloaded. Check network / Apple CDN / output above." >&2; exit 1; }
+
+# Check BaseSystem.dmg against BaseSystem.chunklist with fetch-macOS-v2.py's
+# own verify_image(): Apple's RSA signature on the chunklist, then the
+# SHA-256 of every chunk, then the total size.
+verify_dl() {
+  python3 - "$WORKDIR/fetch-macOS-v2.py" "$DL/BaseSystem.dmg" "$DL/BaseSystem.chunklist" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fetch_macos", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+try:
+    mod.verify_image(sys.argv[2], sys.argv[3])
+except Exception as err:
+    print(f"\nImage verification failed. ({type(err).__name__}: {err})")
+    sys.exit(1)
+PY
+}
+
+HAVE_DMG=0
+if [ -s "$DL/BaseSystem.dmg" ] && [ -s "$DL/BaseSystem.chunklist" ]; then
+  echo "[*] Found an earlier download in $DL ($(du -h "$DL/BaseSystem.dmg" | awk '{print $1}')); verifying it instead of downloading again"
+  if verify_dl; then
+    HAVE_DMG=1
+  else
+    echo "[!] The earlier download did not verify; downloading again"
+  fi
+fi
+
+if [ "$HAVE_DMG" = 0 ]; then
+  rm -rf "$DL"
+  mkdir -p "$DL"
+  echo "[*] Fetching $MACOS_NAME recovery (board $MACOS_BOARD, os=$MACOS_OS_TYPE)"
+  # fetch-macOS-v2.py checks the image against Apple's chunklist and exits
+  # non-zero on a mismatch. If only that check fails, the files stay in $DL
+  # and the next run verifies them again without downloading.
+  python3 fetch-macOS-v2.py \
+    --action download \
+    --board-id "$MACOS_BOARD" \
+    --mlb "$MACOS_MLB" \
+    --os-type "$MACOS_OS_TYPE" \
+    --outdir "$DL" \
+    --basename BaseSystem
+  [ -s "$DL/BaseSystem.dmg" ] || { echo "ERROR: BaseSystem.dmg not downloaded. Check network / Apple CDN / output above." >&2; exit 1; }
+fi
 
 echo "[*] Converting BaseSystem.dmg -> $MACOS_IMG (dmg2img)"
 rm -f "$MACOS_IMG.part"

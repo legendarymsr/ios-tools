@@ -6,7 +6,8 @@
 #   OSXKVM=/path/to/OSX-KVM ./pack-release.sh [path/to/app-debug.apk]
 #
 # OSXKVM must be a kholia/OSX-KVM checkout at the pinned commit below (the
-# OVMF, OpenCore and fetch-macOS-v2.py files come from there). The
+# OVMF, OpenCore and fetch-macOS-v2.py files come from there; the patches in
+# patches/ are applied to fetch-macOS-v2.py). The
 # META-INF/update-binary is taken from the newest older module zip in this
 # directory (Magisk's standard module installer).
 set -euo pipefail
@@ -62,6 +63,21 @@ cp "$OSXKVM/OVMF_CODE_4M.fd" "$OSXKVM/OVMF_VARS-1024x768.fd" "$OSXKVM/OVMF_VARS-
    "$OSXKVM/CREDITS.md" "$OSXKVM/OpenCore/OpenCore.qcow2" "$OSXKVM/OpenCore/config.plist" \
    "$STAGE/payload/assets/"
 cp "$OSXKVM/README.md" "$STAGE/payload/assets/OSX-KVM-README.md"
+# Local fixes to the upstream downloader (patches/*.patch, applied in order)
+for p in "$HERE"/patches/fetch-macOS-v2-*.patch; do
+  echo "patch: $(basename "$p")"
+  patch --quiet --forward --no-backup-if-mismatch -d "$STAGE/payload/assets" -p1 < "$p"
+done
+# verify_image() must not need a terminal (the app runs scripts without one)
+python3 - "$STAGE/payload/assets/fetch-macOS-v2.py" <<'PY'
+import ast, sys
+src = open(sys.argv[1]).read()
+fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "verify_image")
+if "os.get_terminal_size" in ast.get_source_segment(src, fn):
+    sys.exit("fetch-macOS-v2.py: verify_image() still calls os.get_terminal_size()")
+PY
+python3 -m py_compile "$STAGE/payload/assets/fetch-macOS-v2.py"
+rm -rf "$STAGE/payload/assets/__pycache__"
 
 OUT="$HERE/macos-kvm-launcher-v${VER}.zip"
 rm -f "$OUT"
