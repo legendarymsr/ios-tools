@@ -49,15 +49,33 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         port = getIntent().getIntExtra(EXTRA_PORT, 5900);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
 
-        FrameLayout root = new FrameLayout(this);
+        // Vertical split: the framebuffer is letterboxed in the area above
+        // the key strip, so the strip never covers the guest menu bar or Dock.
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.BLACK);
+
+        FrameLayout display = new FrameLayout(this);
+        display.setBackgroundColor(Color.BLACK);
         view = new VncView(this);
-        root.addView(view, new FrameLayout.LayoutParams(
+        display.addView(view, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        status = new TextView(this);
+        status.setTextColor(Color.WHITE);
+        status.setBackgroundColor(0xC0000000);
+        status.setPadding(24, 24, 24, 24);
+        status.setText("Connecting to " + host + ":" + port + " …");
+        display.addView(status, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        root.addView(display, dlp);
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setBackgroundColor(0xB0000000);
+        bar.setBackgroundColor(0xFF1A1A1A);
         bar.setPadding(12, 8, 12, 8);
         bar.addView(barButton("Keyboard", v -> toggleKeyboard()));
         bar.addView(barButton("Esc", v -> view.tap(Keysyms.ESCAPE)));
@@ -73,18 +91,12 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         // The bar is wider than a phone screen: let it scroll sideways.
         HorizontalScrollView barScroll = new HorizontalScrollView(this);
         barScroll.setHorizontalScrollBarEnabled(false);
+        barScroll.setBackgroundColor(0xFF1A1A1A);
+        barScroll.setFillViewport(true);
         barScroll.addView(bar);
-        FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         root.addView(barScroll, blp);
-
-        status = new TextView(this);
-        status.setTextColor(Color.WHITE);
-        status.setBackgroundColor(0xC0000000);
-        status.setPadding(24, 24, 24, 24);
-        status.setText("Connecting to " + host + ":" + port + " …");
-        root.addView(status, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         setContentView(root);
         setTitle(title != null ? title : "VNC " + host + ":" + port);

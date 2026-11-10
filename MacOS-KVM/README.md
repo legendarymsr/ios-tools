@@ -9,9 +9,26 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.3.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.4.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.4: key bar has its own strip; the guest screen is not covered
+
+- The extra-key toolbar (Keyboard, Esc, Ctrl+C, arrows, Enter, Space, Tab, Fit)
+  no longer overlays the framebuffer. It has its own strip at the bottom of
+  the viewer, and the macOS screen is letterboxed into the area above it, so
+  the menu bar and the Dock stay visible.
+- Taps on the letterbox (the black bars around the guest screen) and on the
+  key strip are ignored; taps on the guest screen still map to the matching
+  framebuffer pixel.
+- The soft keyboard still resizes the viewer (`adjustResize`), so the key
+  strip stays just above the IME and the guest screen shrinks to fit.
+- Viewer only: the OpenCore image, recovery image and macOS disk are
+  unchanged. You do not need to re-run setup. Do not reboot while a VM is
+  running — that stops it. Flashing also force-stops the app and may stop
+  QEMU with it, so finish the current session before you flash. After that,
+  reopen the VNC viewer, and run Boot only if the VM is no longer running.
 
 ## v1.1.3: OpenCore boots on its own; arrow keys and tap-to-click in the viewer
 
@@ -114,8 +131,9 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   `127.0.0.1:5900` accepts connections (it watches for about 60 s).
 - The viewer retries the connection for about 60 s while QEMU is still starting,
   and shows **Disconnected — tap to reconnect** if the VM stops.
-- Screen is drawn **fit-to-screen**; **pinch** to zoom (up to 8×), **two-finger
-  drag** to pan, **Fit** resets.
+- Screen is drawn **fit-to-screen** in the area above the key strip
+  (letterboxed); **pinch** to zoom (up to 8×), **two-finger drag** to pan,
+  **Fit** resets.
 - **Tap** = move there and left click, **one-finger drag** = move the pointer
   (v1.1.3), **long press** = right click. Toolbar **← → ↑ ↓ Enter Space Tab**
   send those keys. A hardware mouse (hover + wheel) also works.
@@ -196,7 +214,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.3.zip`, reboot.
+   `macos-kvm-launcher-v1.1.4.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -242,7 +260,19 @@ you run an X server (e.g. Termux-X11).
 
 ## Verified vs not
 
+**v1.1.4, checked on the build host (x86_64 Debian, 2026-11-11):**
+
+- Layout math (letterbox the framebuffer into the area above a reserved key
+  strip; map taps only inside that rectangle) was checked with a stand-in
+  1024×768 image on a 1080×2640 phone-sized canvas, and with a smaller
+  canvas that stands in for the soft keyboard being open. The key strip does
+  not overlap the guest menu bar or Dock, and taps in the letterbox are
+  rejected.
+- The viewer was not run against a live macOS guest on this host. Touch on
+  the phone is not verified here.
+
 **v1.1.0, checked on the build host (x86_64 Debian, 2026-11-10):**
+
 
 - Upstream facts: OSX-KVM `fetch-macOS-v2.py` (commit `4c378a4`) lists Tahoe
   as board `Mac-CFF7D910A743CAAF`, os `latest`; acidanthera's

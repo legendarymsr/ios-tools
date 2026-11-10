@@ -19,9 +19,11 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 
 /**
- * Draws the remote framebuffer fit-to-screen, with pinch zoom and two-finger pan.
- * Touch: tap = left click, one-finger drag = move with left button held,
- * long press = right click. Mouse wheel / hardware keyboard are passed through.
+ * Draws the remote framebuffer fit-to-screen (letterboxed in this view),
+ * with pinch zoom and two-finger pan.
+ * Touch: tap = left click, one-finger drag = move the pointer,
+ * long press = right click. Taps outside the framebuffer are ignored.
+ * Mouse wheel / hardware keyboard are passed through.
  */
 public class VncView extends View {
 
@@ -71,6 +73,7 @@ public class VncView extends View {
             @Override public boolean onSingleTapUp(MotionEvent e) {
                 if (multiTouch) return false;
                 int[] p = toRemote(e.getX(), e.getY());
+                if (p == null) return true;
                 click(p[0], p[1], 1);
                 return true;
             }
@@ -78,6 +81,7 @@ public class VncView extends View {
             @Override public void onLongPress(MotionEvent e) {
                 if (multiTouch || dragging) return;
                 int[] p = toRemote(e.getX(), e.getY());
+                if (p == null) return;
                 click(p[0], p[1], 4);
                 performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
             }
@@ -89,6 +93,7 @@ public class VncView extends View {
                 // One-finger drag moves the pointer to the finger (absolute,
                 // no button held); tap clicks where you tap.
                 int[] p = toRemote(e2.getX(), e2.getY());
+                if (p == null) return true;
                 lastRemoteX = p[0]; lastRemoteY = p[1];
                 c.sendPointer(p[0], p[1], 0);
                 return true;
@@ -162,10 +167,24 @@ public class VncView extends View {
         }
     }
 
+    /**
+     * Maps a view-local point onto the framebuffer, or null if the point is
+     * in the letterbox (outside the scaled guest screen).
+     */
     private int[] toRemote(float vx, float vy) {
+        if (scale <= 0f) return null;
+        int bw, bh;
+        synchronized (bmpLock) {
+            if (bmp == null) return null;
+            bw = bmp.getWidth();
+            bh = bmp.getHeight();
+        }
+        int x = (int) Math.floor((vx - tx) / scale);
+        int y = (int) Math.floor((vy - ty) / scale);
+        if (x < 0 || y < 0 || x >= bw || y >= bh) return null;
         RfbClient c = client;
-        int w = c != null ? c.width : 1, h = c != null ? c.height : 1;
-        int x = (int) ((vx - tx) / scale), y = (int) ((vy - ty) / scale);
+        int w = c != null ? c.width : bw, h = c != null ? c.height : bh;
+        if (w <= 0 || h <= 0) return null;
         return new int[] { Math.max(0, Math.min(w - 1, x)), Math.max(0, Math.min(h - 1, y)) };
     }
 
@@ -231,6 +250,7 @@ public class VncView extends View {
         RfbClient c = client;
         if (c != null && (e.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0) {
             int[] p = toRemote(e.getX(), e.getY());
+            if (p == null) return true;
             if (e.getActionMasked() == MotionEvent.ACTION_HOVER_MOVE) {
                 c.sendPointer(p[0], p[1], 0);
                 return true;
