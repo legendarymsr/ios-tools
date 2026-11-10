@@ -180,7 +180,29 @@ public final class RfbClient {
         } catch (IOException ignored) { }
     }
 
-    public void tapKey(int keysym) { sendKey(keysym, true); sendKey(keysym, false); }
+    /**
+     * Key press and release with a short gap. Firmware (OVMF/OpenCore) polls
+     * the keyboard, so a press and release in the same instant can be missed.
+     */
+    public void tapKey(int keysym) { sendKey(keysym, true); pause(60); sendKey(keysym, false); }
+
+    /**
+     * Absolute click: move to (x, y), then press and release the buttons with
+     * short gaps, so guests that poll the pointer state see the button down.
+     */
+    public void clickAt(int x, int y, int buttons) {
+        sendPointer(x, y, 0);
+        pause(40);
+        sendPointer(x, y, buttons);
+        pause(120);
+        sendPointer(x, y, 0);
+    }
+
+    /** Queues a delay between writes (the writer is a single thread). */
+    public void pause(final long ms) {
+        if (!running) return;
+        post(() -> { try { Thread.sleep(ms); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); } });
+    }
 
     private static int clamp(int v, int max) { return Math.max(0, Math.min(v, Math.max(0, max - 1))); }
 

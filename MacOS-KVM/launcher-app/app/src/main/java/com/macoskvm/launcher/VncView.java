@@ -86,15 +86,11 @@ public class VncView extends View {
                 if (multiTouch || e2.getPointerCount() > 1) return false;
                 RfbClient c = client;
                 if (c == null) return true;
-                if (!dragging && e1 != null) {
-                    int[] s = toRemote(e1.getX(), e1.getY());
-                    c.sendPointer(s[0], s[1], 0);
-                    c.sendPointer(s[0], s[1], 1);
-                    dragging = true;
-                }
+                // One-finger drag moves the pointer to the finger (absolute,
+                // no button held); tap clicks where you tap.
                 int[] p = toRemote(e2.getX(), e2.getY());
                 lastRemoteX = p[0]; lastRemoteY = p[1];
-                c.sendPointer(p[0], p[1], 1);
+                c.sendPointer(p[0], p[1], 0);
                 return true;
             }
         });
@@ -176,9 +172,7 @@ public class VncView extends View {
     private void click(int x, int y, int buttonMask) {
         RfbClient c = client;
         if (c == null) return;
-        c.sendPointer(x, y, 0);
-        c.sendPointer(x, y, buttonMask);
-        c.sendPointer(x, y, 0);
+        c.clickAt(x, y, buttonMask);
     }
 
     @Override public boolean onTouchEvent(MotionEvent e) {

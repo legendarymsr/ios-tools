@@ -63,6 +63,21 @@ cp "$OSXKVM/OVMF_CODE_4M.fd" "$OSXKVM/OVMF_VARS-1024x768.fd" "$OSXKVM/OVMF_VARS-
    "$OSXKVM/CREDITS.md" "$OSXKVM/OpenCore/OpenCore.qcow2" "$OSXKVM/OpenCore/config.plist" \
    "$STAGE/payload/assets/"
 cp "$OSXKVM/README.md" "$STAGE/payload/assets/OSX-KVM-README.md"
+# OpenCore boots the installer (or macOS) on its own: opencore/oc-config.py
+# edits config.plist, which is then written into the image's ESP.
+for t in qemu-img mcopy; do command -v $t >/dev/null || { echo "need $t (qemu-utils, mtools)"; exit 1; }; done
+OCRAW="$STAGE/oc.raw"
+qemu-img convert -O raw "$STAGE/payload/assets/OpenCore.qcow2" "$OCRAW"
+OCESP="$OCRAW@@$((2048*512))"   # ESP starts at sector 2048
+mcopy -n -i "$OCESP" ::/EFI/OC/config.plist "$STAGE/oc-embedded.plist"
+cmp -s "$STAGE/oc-embedded.plist" "$STAGE/payload/assets/config.plist" \
+  || { echo "OpenCore.qcow2's config.plist is not OpenCore/config.plist"; exit 1; }
+python3 "$HERE/opencore/oc-config.py" "$STAGE/payload/assets/config.plist" "$STAGE/oc-new.plist"
+cp "$STAGE/oc-new.plist" "$STAGE/payload/assets/config.plist"
+mcopy -o -i "$OCESP" "$STAGE/oc-new.plist" ::/EFI/OC/config.plist
+mcopy -n -i "$OCESP" ::/EFI/OC/config.plist - | cmp -s - "$STAGE/oc-new.plist" || { echo "config.plist write failed"; exit 1; }
+qemu-img convert -c -O qcow2 "$OCRAW" "$STAGE/payload/assets/OpenCore.qcow2"
+rm -f "$OCRAW" "$STAGE/oc-embedded.plist" "$STAGE/oc-new.plist"
 # Local fixes to the upstream downloader (patches/*.patch, applied in order)
 for p in "$HERE"/patches/fetch-macOS-v2-*.patch; do
   echo "patch: $(basename "$p")"

@@ -53,6 +53,15 @@ case "$ACCEL" in
   *)   echo "ERROR: ACCEL must be kvm or tcg" >&2; exit 2 ;;
 esac
 
+# The module (customize.sh) stages a new OpenCore.qcow2 in assets/ on every
+# flash; use it even if step 3 was not run again (the VM opens it read-only
+# with snapshot=on, so the copy here is never changed by booting).
+if [ -f assets/OpenCore.qcow2 ] && ! cmp -s assets/OpenCore.qcow2 OpenCore.qcow2; then
+  echo "[*] Updating OpenCore.qcow2 from the module's assets"
+  cp -f assets/OpenCore.qcow2 OpenCore.qcow2
+  [ -f assets/config.plist ] && cp -f assets/config.plist config.plist
+fi
+
 for f in OVMF_CODE_4M.fd OVMF_VARS-1024x768.fd OpenCore.qcow2; do
   [ -f "$f" ] || { echo "ERROR: missing $f - run step 3 (Stage OSX-KVM assets) first." >&2; exit 1; }
 done
@@ -90,10 +99,14 @@ args=(
   -device ich9-ahci,id=sata
   -drive id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file="$WORKDIR/OpenCore.qcow2"
   -device ide-hd,bus=sata.2,drive=OpenCoreBoot
-  -drive id=InstallMedia,if=none,file="$WORKDIR/$MACOS_IMG",format=raw
-  -device ide-hd,bus=sata.3,drive=InstallMedia
+  # The macOS disk sits on the port before the installer: OpenCore's default
+  # entry is the first bootable volume it finds, so a blank disk falls through
+  # to the installer, and once macOS (or its installer stage) is on the disk,
+  # that is booted instead.
   -drive id=MacHDD,if=none,file="$WORKDIR/mac_hdd_ng.img",format=qcow2
-  -device ide-hd,bus=sata.4,drive=MacHDD
+  -device ide-hd,bus=sata.3,drive=MacHDD
+  -drive id=InstallMedia,if=none,file="$WORKDIR/$MACOS_IMG",format=raw
+  -device ide-hd,bus=sata.4,drive=InstallMedia
   -netdev user,id=net0,hostfwd=tcp::2222-:22
   -device virtio-net-pci,netdev=net0,id=net0,mac=52:54:00:c9:18:27
   -monitor "$MONITOR"

@@ -9,9 +9,35 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.2.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.3.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.3: OpenCore boots on its own; arrow keys and tap-to-click in the viewer
+
+- The OpenCore picker no longer waits for input. It shows a 5 second
+  countdown, then boots the installer (BaseSystem). Upstream also listed
+  OpenCore's own partition as **EFI**; that entry was the default and booting
+  it went nowhere, so the picker sat there. The module's `config.plist` now
+  sets `ScanPolicy` `0x301` (list APFS and HFS volumes only) and `Timeout` 5;
+  `ShowPicker` stays on, so any key press during the countdown stops it
+  (`opencore/oc-config.py`, applied by `pack-release.sh`).
+- The macOS disk is now attached before the installer image. While the disk
+  is blank, the installer is booted; once macOS (or its installer stage) is on
+  the disk, that is the default instead. The installer entry stays in the
+  picker.
+- Viewer toolbar: **← → ↑ ↓ Enter Space Tab** buttons (the bar scrolls
+  sideways). OpenCore's graphical picker has no number hotkeys (`1`, `2`, …
+  only work in its text picker), so use the arrows + Enter, or just wait.
+- Viewer touch: **tap** moves the pointer there and clicks (press and release
+  are now spaced out so the guest sees them); **one-finger drag** moves the
+  pointer without a button. Keys from the toolbar are also spaced out.
+- The Boot step picks up the new `OpenCore.qcow2` from the flashed module by
+  itself; step 3 does not need to be run again. Recovery image and macOS disk
+  are kept.
+- In testing, the pointer did not move in the OpenCore picker itself (VNC
+  pointer events reach QEMU's USB tablet, but the firmware did not act on
+  them), so use the arrow buttons there. The USB tablet is what macOS uses.
 
 ## v1.1.2: recovery check works without a terminal
 
@@ -90,8 +116,9 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   and shows **Disconnected — tap to reconnect** if the VM stops.
 - Screen is drawn **fit-to-screen**; **pinch** to zoom (up to 8×), **two-finger
   drag** to pan, **Fit** resets.
-- **Tap** = left click, **one-finger drag** = move with the left button held,
-  **long press** = right click. A hardware mouse (hover + wheel) also works.
+- **Tap** = move there and left click, **one-finger drag** = move the pointer
+  (v1.1.3), **long press** = right click. Toolbar **← → ↑ ↓ Enter Space Tab**
+  send those keys. A hardware mouse (hover + wheel) also works.
 - **Keyboard** toolbar button shows/hides the soft keyboard; typed text is sent
   as key events. Extra toolbar keys: **Esc** and **Ctrl+C**. Hardware keyboards
   work too (arrows, Home/End, PgUp/PgDn, modifiers).
@@ -169,7 +196,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.2.zip`, reboot.
+   `macos-kvm-launcher-v1.1.3.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)

@@ -13,6 +13,7 @@ import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -61,10 +62,21 @@ public class VncActivity extends Activity implements RfbClient.Listener {
         bar.addView(barButton("Keyboard", v -> toggleKeyboard()));
         bar.addView(barButton("Esc", v -> view.tap(Keysyms.ESCAPE)));
         bar.addView(barButton("Ctrl+C", v -> combo(Keysyms.CONTROL, 'c')));
+        bar.addView(barButton("\u2190", v -> view.tap(Keysyms.LEFT)));
+        bar.addView(barButton("\u2192", v -> view.tap(Keysyms.RIGHT)));
+        bar.addView(barButton("\u2191", v -> view.tap(Keysyms.UP)));
+        bar.addView(barButton("\u2193", v -> view.tap(Keysyms.DOWN)));
+        bar.addView(barButton("Enter", v -> view.tap(Keysyms.RETURN)));
+        bar.addView(barButton("Space", v -> view.tap(' ')));
+        bar.addView(barButton("Tab", v -> view.tap(Keysyms.TAB)));
         bar.addView(barButton("Fit", v -> view.resetZoom()));
+        // The bar is wider than a phone screen: let it scroll sideways.
+        HorizontalScrollView barScroll = new HorizontalScrollView(this);
+        barScroll.setHorizontalScrollBarEnabled(false);
+        barScroll.addView(bar);
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
-        root.addView(bar, blp);
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+        root.addView(barScroll, blp);
 
         status = new TextView(this);
         status.setTextColor(Color.WHITE);
