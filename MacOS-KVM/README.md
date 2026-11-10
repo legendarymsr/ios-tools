@@ -9,9 +9,26 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.0.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.1.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.1: QEMU from bookworm-backports
+
+- Fixed step 2 failing with `qemu-system-x86 : Depends: qemu-system-common
+  (= 1:7.2+dfsg-7+deb12u18+b3) but 1:10.0.2+ds-2+deb13u1~bpo12+1 is to be
+  installed` when the iOS VM module (qemu-t8030) had already installed QEMU 10
+  from bookworm-backports into the same Debian chroot. All `qemu-system-*`
+  packages must have the same version.
+- Step 2 now adds the `bookworm-backports` source if it is missing (the same
+  line the iOS VM module writes) and installs `qemu-system-x86` and
+  `qemu-utils` with `-t bookworm-backports` (QEMU 10.0.2). QEMU packages that
+  are already installed, such as `qemu-system-arm`, are listed too so they stay
+  on the same version. apt runs with `--no-remove`: nothing is removed or
+  downgraded. dmg2img, python3 and the other helpers still come from bookworm.
+- If backports cannot be reached, a fresh chroot falls back to bookworm's
+  QEMU 7.2. If QEMU from backports is already installed, the step stops with
+  an error instead of mixing versions.
 
 ## v1.1.0: macOS 26 (Tahoe)
 
@@ -136,7 +153,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.0.zip`, reboot.
+   `macos-kvm-launcher-v1.1.1.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -149,8 +166,9 @@ On flash, `customize.sh` also stages everything under
 1. **Install & update Debian** — downloads a Debian arm64 rootfs to
    `/data/local/debian` and writes `/data/local/enter-debian.sh` (real chroot
    with `/dev`/`/proc`/`/sys` and `/data/local/osx-kvm` bind-mounted).
-2. **Install qemu-system-x86 in chroot** — `apt install qemu-system-x86`
-   (Debian's prebuilt glibc binary).
+2. **Install qemu-system-x86 in chroot** — `apt install -t bookworm-backports
+   qemu-system-x86 qemu-utils` (Debian's prebuilt QEMU 10.0; bookworm's 7.2 if
+   backports is unreachable on a fresh chroot) plus dmg2img and helpers.
 3. **Stage OSX-KVM assets + create HDD** — copies OVMF/OpenCore into
    `/data/local/osx-kvm` and creates a 64G `mac_hdd_ng.img` qcow2.
 4. **Fetch macOS 26 (Tahoe) recovery** — runs `fetch-macOS-v2.py --action
