@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.10.2.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.10.3.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -36,7 +36,7 @@ HakiOS 2.3.4's own changes (Metal, touch, the phone ports) are for the POCO X5 P
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.2.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.3.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 18 GB free storage for a first build (the 6.2 GB IPSW is deleted after unpacking) and about 3 GB free RAM while iOS runs.
@@ -223,6 +223,21 @@ instruction is translated in software (TCG). What helps:
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
+
+## v2.10.3: step 3 never leaves an old system image behind
+
+HakiOS's `userland/build.sh` writes the system image with `mkapfs.py ... | tail -1` under `set -e` but
+without `pipefail`: when `mkapfs.py` stopped (out of space or memory -- it holds about 2 GB and needs
+about 6 GB of disk while it writes), the build still ended "build done" and the system image of an older
+build stayed, so step 4 booted a stock home screen (white wallpaper, no Sileo, NewTerm or TrollStore).
+Now step 3:
+- deletes the old system image first whenever it is to be made again, and checks there are 6 GB free;
+- keeps their build's output in `userland/ios-tools-build.log` and fails unless `mkapfs.py` reported the
+  system image written, and unless Sileo, NewTerm and TrollHelper are in it;
+- fails when the jailbreak (`tools/mk-jb.sh`), NewTerm or TrollStore cannot be made, or the black
+  wallpaper's plist is missing, instead of building without them;
+- records the finished build (`userland/.ios-tools-built`), and step 4 boots only images from a finished
+  step 3 of this checkout. Updating the checkout (step 2) deletes the old images.
 
 ## v2.10.2: upgrading a phone from v2.9.x
 

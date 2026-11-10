@@ -139,7 +139,8 @@ repo_update() {
     || die "the HakiOS checkout is not clean at ${target:0:7} after the update"
   if [ -n "$before" ] && [ "$before" != "$target" ]; then
     log "HakiOS repository updated: ${before:0:7} -> ${target:0:7} (ios-tools' edits to it are made again at step 3)"
-    # a snapshot is of the old images: of no use any more, and a few GB
+    # the old images (and a snapshot of them) are of no use any more, and a few GB: step 3 makes them again
+    rm -f "$DIR/userland/system.apfs" "$DIR/userland/root.apfs" "$DIR/userland/.ios-tools-built"
     if [ -f "$DIR/qemu/hackios.snapshot" ]; then
       rm -f "$DIR/qemu/hackios.snapshot" "$DIR/qemu/hackios.snapshot.key" "$DIR/qemu/hackios.snapshot.part"
       log "the saved snapshot (of the old images) is deleted"
@@ -798,6 +799,7 @@ do_build() {
      || [ sysimage/select-system.py -nt sysimage/.done-rootfs ] \
      || { [ ! -f xnuloader/identity.h ] && [ ! -f sysimage/DeviceTree.d22ap.im4p ]; }; then
     local ipsw; ipsw=$(get_ipsw)
+    rm -f userland/.ios-tools-built   # new iOS files: the images are made again from them
     log "unpacking iOS 16.5 from the IPSW (HakiOS's sysimage/unpack.sh)"
     bash sysimage/unpack.sh "$ipsw" || die "sysimage/unpack.sh failed (see above)"
     if [ "$ipsw" = "$DIR/sysimage/$IPSW_NAME" ] && [ "${HACKIOS_KEEP_IPSW:-0}" != 1 ]; then
@@ -822,9 +824,11 @@ do_build() {
     fi
     if [ ! -d jb/root/var/jb ]; then
       log "jailbreak: HackiOS's tools/mk-jb.sh (Procursus rootless bootstrap, Sileo, ElleKit)"
-      bash tools/mk-jb.sh | tail -2 || die "tools/mk-jb.sh failed (see above)"
+      bash tools/mk-jb.sh | tail -2 || die "tools/mk-jb.sh failed (see above) - the jailbreak (Sileo, NewTerm, TrollStore) would be missing; run step 3 again"
       system=1   # a new prefix: the system image (which carries it as /jb) is made again
     fi
+    [ -f jb/root/var/jb/prep.sh ] && [ -d jb/root/var/jb/Applications/Sileo.app ] \
+      || die "jailbreak: tools/mk-jb.sh left no complete prefix in jb/root/var/jb (no prep.sh or Sileo.app) - run step 3 again"
     jb=on
   elif [ -d jb/root ]; then
     log "jailbreak left out (HACKIOS_JB=0)"; rm -rf jb/root
@@ -834,7 +838,8 @@ do_build() {
   # tools, so it rides on HACKIOS_JB.
   local want_nt=off
   if [ "$jb" = on ] && [ "${HACKIOS_NEWTERM:-1}" != 0 ]; then
-    if bundle_newterm; then want_nt=on; else log "NewTerm: not bundled (see above)"; fi
+    bundle_newterm || die "NewTerm could not be bundled (see above) - run step 3 again (network?)"
+    want_nt=on
   elif [ -d jb/root/var/jb/Applications/NewTerm.app ]; then
     log "NewTerm left out (HACKIOS_NEWTERM=0 or no jailbreak): removing it from the prefix"
     rm -rf jb/root/var/jb/Applications/NewTerm.app
@@ -845,7 +850,7 @@ do_build() {
   local want_ts=off
   if [ "$jb" = on ] && [ "${HACKIOS_TROLLSTORE:-1}" != 0 ]; then
     if bundle_trollstore; then want_ts="on:$(ls jb/root/var/jb/usr/share/ios-tools/tipa 2>/dev/null | tr '\n' ' ')"
-    else log "TrollStore: not bundled (see above)"; unbundle_trollstore; fi
+    else unbundle_trollstore; die "TrollStore could not be bundled (see above) - run step 3 again (network?)"; fi
   elif [ -d jb/root/var/jb/usr/share/ios-tools ]; then
     log "TrollStore left out (HACKIOS_TROLLSTORE=0 or no jailbreak): removing it from the prefix"
     unbundle_trollstore
@@ -874,6 +879,9 @@ do_build() {
   # (Bokeh, the stripes, LayeredAnimation) is procedural, and a raster "poster" needs the GPU.
   local want_wall=stripe-black; [ "${HACKIOS_WALLPAPER:-1}" = 0 ] && want_wall=stock
   local dwp=sysimage/rootfs/Library/Wallpaper/DefaultWallpapers~iphone.plist
+  if [ "$want_wall" != stock ] && [ ! -f "$dwp" ]; then
+    die "the iOS files have no $dwp (for the black wallpaper): the unpack is incomplete - delete sysimage/.done-rootfs and run step 3 again"
+  fi
   if [ -f "$dwp" ]; then
     [ -f "$dwp.ios-tools-orig" ] || cp "$dwp" "$dwp.ios-tools-orig"
     python3 - "$dwp" "$want_wall" <<'PYWALL'
@@ -910,15 +918,43 @@ PYWALL
   fi
   if [ -n "${HACKIOS_TZ:-}" ]; then export HACKIOS_TZ; log "time zone: $HACKIOS_TZ"; fi
   local jobs; jobs=$(net_jobs)
+  # The system image is made again (and the old one deleted first) whenever anything in it changes: their
+  # build.sh writes it with `mkapfs.py ... | tail -1` under set -e without pipefail, so a mkapfs.py that
+  # stops (out of space, out of memory) went unnoticed and the OLD system.apfs stayed -- a phone booted a
+  # stock image from an older build, without the jailbreak's apps and the black wallpaper.
+  local remake=$system
+  if [ ! -f userland/system.apfs ] || [ ! -f userland/.ios-tools-built ] \
+     || [ sysimage/system.manifest -nt userland/system.apfs ] || [ sysimage/cryptex -nt userland/system.apfs ] \
+     || [ sysimage/cryptex-app -nt userland/system.apfs ]; then remake=1; fi
+  if [ -n "$remake" ]; then
+    rm -f userland/system.apfs userland/system.apfs.spool userland/.ios-tools-built
+    local have; have=$(free_gb "$DIR")
+    if [ -n "$have" ] && [ "$have" -lt 6 ]; then
+      die "only ${have} GB free in $DIR: the system image needs about 6 GB while it is made (2.5 GB afterwards) - free some space and run step 3 again"
+    fi
+  fi
   log "building the images (HackiOS's prebuilt kernel and programs; boot jobs: $(basename "$jobs"))"
-  ( cd userland && PREBUILT=1 REST=1 RC_JOBS="$jobs" SYSTEM=$system EXTRA="${extra# }" \
-      bash build.sh ) || die "their image build failed (see above)"
+  ( cd userland && PREBUILT=1 REST=1 RC_JOBS="$jobs" SYSTEM=$remake EXTRA="${extra# }" \
+      bash build.sh ) 2>&1 | tee userland/ios-tools-build.log || die "their image build failed (see above; userland/ios-tools-build.log)"
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] && [ -f xnuloader/loader.efi ] \
-    || die "the images were not built (see above)"
+    || die "the images were not built (see above; userland/ios-tools-build.log)"
+  if [ -n "$remake" ] && ! grep -q '^mkapfs.py: system.apfs: ' userland/ios-tools-build.log; then
+    rm -f userland/system.apfs
+    die "the system image was not written: mkapfs.py stopped (out of space or memory?) - see userland/ios-tools-build.log, free some space and run step 3 again"
+  fi
+  # what has to be in it: the prefix's apps (names are plain text in APFS's directory records)
+  local app
+  for app in $([ "$jb" = on ] && echo Sileo.app) $([ "$want_nt" = on ] && echo NewTerm.app) \
+             $([ "$want_ts" != off ] && echo TrollStorePersistenceHelper.app); do
+    grep -aqF "$app" userland/system.apfs \
+      || { rm -f userland/system.apfs; die "the system image has no $app although it was bundled - run step 3 again"; }
+  done
   echo "$jb" > userland/.ios-tools-jb
   echo "$want_nt" > userland/.ios-tools-newterm
   echo "$want_ts" > userland/.ios-tools-trollstore
   echo "${want_wall:-stock}" > userland/.ios-tools-wallpaper
+  # the images are whole and from this checkout: step 4 boots nothing else
+  git rev-parse HEAD > userland/.ios-tools-built
   log "images: root.apfs $(du -h userland/root.apfs | cut -f1), system.apfs $(du -h userland/system.apfs | cut -f1)"
   log "build done - next: step 4 (boot)"
 }
@@ -990,6 +1026,8 @@ do_run() {
   credit
   cd "$DIR" 2>/dev/null || die "not set up yet - run step 2 first"
   repo_current || die "the HakiOS checkout is from an older ios-tools - run step 3 (it updates it and remakes the images)"
+  [ "$(cat userland/.ios-tools-built 2>/dev/null)" = "$(git rev-parse HEAD)" ] \
+    || die "the images are not from a finished step 3 of this ios-tools (an older build, or step 3 stopped) - run step 3 again"
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images yet - run step 3 first"
   [ -z "$(qemu_pids)" ] || die "HackiOS is already running (Power off VM stops it)"
   pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null && die "another iOS VM (qemu-t8030) is running on the same VNC port - stop it first"
