@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.10.0.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.10.1.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -36,7 +36,7 @@ HakiOS 2.3.4's own changes (Metal, touch, the phone ports) are for the POCO X5 P
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.0.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.1.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 18 GB free storage for a first build (the 6.2 GB IPSW is deleted after unpacking) and about 3 GB free RAM while iOS runs.
@@ -223,6 +223,28 @@ instruction is translated in software (TCG). What helps:
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
+
+## v2.10.1: Sileo and apt install packages again
+
+In v2.10.0 Sileo queued nothing: "Depends firmware", "Depends org.swift.libswift" (the other half of Sileo's
+`firmware (>= 12.2) | org.swift.libswift` dependency), "Depends libkrw0-plugin". Under the Debian chroot's
+Python 3.11.2 upstream's `tools/jb-preinstall.py` stopped at `tarfile`'s `filter=` (Python 3.12), so
+`tools/mk-jb.sh` stopped half way: shshd, libkrw0 and libdimentio0 were still in dpkg's database, no
+`/var/jb/prep.sh` was written, and so `/var/jb/usr/libexec/firmware` never ran and the `firmware` package --
+which is in no repository, apt has "no installation candidate" for it -- never existed. A second `build` kept
+that half-made prefix. Now:
+- `jb-preinstall.py` is patched to pass `filter=` only where Python has it;
+- a prefix without `prep.sh` (an unfinished `mk-jb.sh`) is made again, and with it the system image;
+- `jb_dpkg_tidy` makes dpkg's database consistent at build time: `firmware` 16.5 and the `cy+` packages
+  (os.iphoneos 16.5, model.iphone 10.3, kernel.darwin 22.5.0, cpu.arm64, lib.corefoundation) are recorded
+  locally as Procursus's `firmware` program writes them (it rewrites them at every boot), shshd/libkrw0/
+  libdimentio0 are taken out, and the packages put in by hand (Sileo, ElleKit, OpenSSH, NewTerm, TrollHelper, ...)
+  get their file lists, md5sums and full control records from their .debs; the boot job
+  `/var/jb/usr/libexec/ios-tools/dpkg-tidy.sh` gives `firmware`/`cy+*`/`gsc.*` their empty file lists, so
+  `dpkg --audit` is clean.
+
+The `mobile` user's password (for `sudo` in NewTerm) is `alpine`; root logs in over ssh with your key only.
+An existing install picks the fix up at the next step 3 (build).
 
 ## v2.10.0: HakiOS 2.3.4
 

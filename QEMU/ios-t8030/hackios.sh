@@ -181,6 +181,9 @@ do_setup() {
 #  - userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none (the launcher
 #    passes Android's), and qemu/run-darwin.sh passes QEMU_NET_EXTRA to the user network (the
 #    host's clock for timesync, the ssh port)
+#  - tools/jb-preinstall.py passes tarfile's filter= argument, which Python only has from 3.11.4 (3.12):
+#    Debian bookworm's 3.11.2 (this chroot) stops mk-jb.sh with a TypeError. Without the argument the
+#    old behaviour is the fully trusted one it asks for anyway
 #  - QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
 #    cut iOS's dock off in the launcher's viewer. The loader makes the ramfb PANEL 944x2048 (<=2048,
 #    iOS's aspect); iOS still renders 1125x2436 and the kernel scales it onto the panel, exactly as it
@@ -202,6 +205,9 @@ fixes = [
   ("qemu/run-darwin.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
+  ("tools/jb-preinstall.py",
+   "tar.extract(member, prefix, set_attrs=True, filter='fully_trusted')",
+   "tar.extract(member, prefix, set_attrs=True, **({'filter': 'fully_trusted'} if hasattr(tarfile, 'fully_trusted_filter') else {}))"),
   ("xnuloader/loader.c",
    "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n",
    "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n"
@@ -253,6 +259,11 @@ JOBS
     cat >> "$f" <<'JOBS'
 /var/jb/bin/sh /var/jb/prep.sh
 JOBS
+    # ios-tools: dpkg's records of the packages prep.sh's firmware program just wrote (firmware, cy+*, gsc.*)
+    # get their (empty) file lists, so dpkg --audit has nothing to say about them
+    if [ -f "$DIR/jb/root/var/jb/usr/libexec/ios-tools/dpkg-tidy.sh" ]; then
+      printf '/var/jb/bin/sh /var/jb/usr/libexec/ios-tools/dpkg-tidy.sh\n' >> "$f"
+    fi
     # ssh into iOS (opt-in): HACKIOS_SSH_KEY=<public key file> puts that key in /var/root/.ssh through
     # their build's ssh/ directory (with a host key made here; SHARE=1 images never carry them) and
     # starts the prefix's sshd; `run` forwards 127.0.0.1:${HACKIOS_SSH_PORT:-2222} to it. This is how
@@ -449,6 +460,7 @@ for n in want:
       if curl -fsSL --retry 3 -o "$tmp/dep.deb" "$PROCURSUS_MIRROR/$fn"; then
         if deb_extract "$tmp/dep.deb" "$root"; then
           dpkg_record "$st" "$pkg" "$ver" "$arch" "$dep"; n=$((n+1))
+          cp -f "$tmp/dep.deb" "$DIR/jb/debs/ios-tools-$pkg.deb" 2>/dev/null || true   # for jb_dpkg_tidy
         fi
       else
         log "NewTerm: dependency $pkg could not be downloaded (continuing)"
@@ -505,6 +517,7 @@ bundle_trollstore() {
     [ -x "$tmp/th/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper" ] \
       || { log "TrollStore: not the rootless TrollHelper deb - left out"; return 1; }
     cp -a "$tmp/th/." "$root/"
+    cp -f "$deb" "$DIR/jb/debs/ios-tools-trollhelper.deb" 2>/dev/null || true   # for jb_dpkg_tidy
     dpkg_record "$root/var/jb/Library/dpkg/status" com.opa334.trollstorehelper \
       "$(deb_field "$deb" Version || echo 0)" iphoneos-arm64
   fi
@@ -573,6 +586,129 @@ unbundle_trollstore() {
   sed -i '/^Package: com\.opa334\.trollstorehelper$/,/^$/d' "$root/var/jb/Library/dpkg/status" 2>/dev/null || true
 }
 
+# jb_dpkg_tidy (ios-tools): make the prefix's dpkg database consistent, so that apt and Sileo install packages.
+#  - every package written into dpkg's status by hand (mk-jb.sh: Sileo, ElleKit, its PREINSTALL list; ours:
+#    NewTerm and its dependencies, TrollHelper) gets its file list and md5sums from its .deb, and NewTerm's and
+#    TrollHelper's records the whole control of their .deb (dpkg wants Description and Maintainer)
+#  - the packages Procursus's /var/jb/usr/libexec/firmware writes at every boot (prep.sh runs it) are put in
+#    already, with the values that program wrote in this VM (iOS 16.5, iPhone10,3, Darwin 22.5.0): "firmware"
+#    is in no repository -- apt has "no installation candidate" for it -- and Sileo, snaputil, NewTerm and much
+#    of Procursus depend on it, so a prefix without it cannot install anything; firmware rewrites them at boot
+#  - shshd, libkrw0 and libdimentio0 out, as mk-jb.sh takes them out: nothing provides libkrw0-plugin here
+#    (the kernel is HakiOS's own), and one unmet dependency in the database stops every install
+#  - the boot script dpkg-tidy.sh gives the gsc.* records that firmware writes at boot their empty file lists
+# Prints the number of changes. Idempotent.
+jb_dpkg_tidy() {
+  local root="$DIR/jb/root" lib="$DIR/jb/root/var/jb/usr/libexec/ios-tools"
+  [ -f "$root/var/jb/Library/dpkg/status" ] || { echo 0; return 0; }
+  mkdir -p "$lib" "$DIR/jb/debs"
+  # TrollHelper bundled by an older ios-tools: its .deb again, for the file list
+  if grep -q '^Package: com\.opa334\.trollstorehelper$' "$root/var/jb/Library/dpkg/status" \
+     && [ ! -f "$root/var/jb/Library/dpkg/info/com.opa334.trollstorehelper.list" ] && [ ! -f "$DIR/jb/debs/ios-tools-trollhelper.deb" ]; then
+    local v; v=$(awk '/^Package: com\.opa334\.trollstorehelper$/{f=1} f&&/^Version:/{print $2; exit}' "$root/var/jb/Library/dpkg/status")
+    [ -n "$v" ] && ts_fetch "com.opa334.trollstorehelper_${v}_iphoneos-arm64.deb" "$DIR/jb/debs/ios-tools-trollhelper.deb" >&2 \
+      || { rm -f "$DIR/jb/debs/ios-tools-trollhelper.deb"; log "dpkg: TrollHelper $v .deb not found, its file list is left empty" >&2; }
+  fi
+  cat > "$lib/dpkg-tidy.sh.new" <<'TIDY'
+#!/var/jb/bin/sh
+# ios-tools: empty file lists for the records /var/jb/usr/libexec/firmware writes (firmware, cy+*, gsc.*: no files)
+I=/var/jb/Library/dpkg/info
+while IFS= read -r line; do
+  case "$line" in
+  "Package: firmware"|"Package: cy+"*|"Package: gsc."*)
+    p=${line#Package: }
+    [ -e "$I/$p.list" ] || : > "$I/$p.list"
+    [ -e "$I/$p.md5sums" ] || : > "$I/$p.md5sums" ;;
+  esac
+done < /var/jb/Library/dpkg/status
+exit 0
+TIDY
+  local n=0
+  if ! cmp -s "$lib/dpkg-tidy.sh.new" "$lib/dpkg-tidy.sh"; then mv -f "$lib/dpkg-tidy.sh.new" "$lib/dpkg-tidy.sh"; n=1
+  else rm -f "$lib/dpkg-tidy.sh.new"; fi
+  chmod 0755 "$lib/dpkg-tidy.sh"
+  local d debs=()
+  for d in "$DIR"/jb/debs/*.deb "$HERE"/ws.hbang.newterm3*.deb "${NEWTERM_DEB:-}"; do [ -n "$d" ] && [ -f "$d" ] && debs+=("$d"); done
+  python3 - "$root/var/jb" "$n" "${debs[@]}" <<'PYTIDY'
+import hashlib, io, os, subprocess, sys, tarfile
+jb, changes, debs = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+info = os.path.join(jb, 'Library/dpkg/info')
+status_path = os.path.join(jb, 'Library/dpkg/status')
+stanzas = [s for s in open(status_path, encoding='utf-8').read().split('\n\n') if s.strip()]
+def field(st, k):
+    for line in st.split('\n'):
+        if line.startswith(k + ':'):
+            return line.split(':', 1)[1].strip()
+    return ''
+def installed(name):
+    return [i for i, st in enumerate(stanzas) if field(st, 'Package') == name and 'install ok installed' in field(st, 'Status')]
+# 1. what nothing can satisfy here goes, files and all (as tools/mk-jb.sh does)
+for name in ('shshd', 'libkrw0', 'libdimentio0'):
+    if not installed(name):
+        continue
+    lst = os.path.join(info, name + '.list')
+    if os.path.exists(lst):
+        for path in open(lst).read().split('\n'):
+            full = os.path.join(jb, os.path.relpath(path, '/var/jb')) if path.startswith('/var/jb/') else None
+            if full and os.path.isfile(full) and not os.path.islink(full):
+                os.unlink(full)
+    for f in os.listdir(info):
+        if f.startswith(name + '.'):
+            os.unlink(os.path.join(info, f))
+    stanzas = [st for st in stanzas if field(st, 'Package') != name]
+    changes += 1
+# 2. file lists, md5sums and whole records from the .debs
+for deb in debs:
+    try:
+        ctrl = subprocess.run(['dpkg-deb', '-f', deb], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        continue
+    name = field(ctrl, 'Package')
+    hits = installed(name)
+    if not name or not hits or field(stanzas[hits[0]], 'Version') != field(ctrl, 'Version'):
+        continue
+    st = stanzas[hits[0]]
+    if not field(st, 'Description') or not field(st, 'Maintainer'):
+        stanzas[hits[0]] = '\n'.join(l for l in ctrl.split('\n') if l.strip()) + '\nStatus: install ok installed'
+        changes += 1
+    lst, md5 = os.path.join(info, name + '.list'), os.path.join(info, name + '.md5sums')
+    if os.path.exists(lst) and os.path.exists(md5):
+        continue
+    data = subprocess.run(['dpkg-deb', '--fsys-tarfile', deb], capture_output=True, check=True).stdout
+    paths, sums = [], []
+    with tarfile.open(fileobj=io.BytesIO(data)) as t:
+        for m in t.getmembers():
+            p = os.path.normpath(m.name.lstrip('.')).lstrip('/')
+            paths.append('/.' if p in ('', '.') else '/' + p)
+            if m.isfile():
+                sums.append(f"{hashlib.md5(t.extractfile(m).read()).hexdigest()}  {p}")
+    if not os.path.exists(lst):
+        open(lst, 'w').write('\n'.join(dict.fromkeys(paths)) + '\n'); changes += 1
+    if not os.path.exists(md5):
+        open(md5, 'w').write('\n'.join(sums) + ('\n' if sums else '')); changes += 1
+# 3. firmware and the cy+ packages, as /var/jb/usr/libexec/firmware writes them on this VM (it rewrites them at boot)
+virtual = [('firmware', '16.5', 'almost impressive Apple frameworks'),
+           ('cy+os.iphoneos', '16.5', 'virtual operating system dependency'),
+           ('cy+cpu.arm64', '0', 'virtual CPU dependency'),
+           ('cy+cpu.arm64v8', '0', 'virtual CPU dependency'),
+           ('cy+model.iphone', '10.3', 'virtual model dependency'),
+           ('cy+kernel.darwin', '22.5.0', 'virtual kernel dependency'),
+           ('cy+lib.corefoundation', '1977.00', 'virtual corefoundation dependency')]
+for name, version, desc in virtual:
+    if not installed(name):
+        stanzas.append(f'Package: {name}\nEssential: yes\nStatus: install ok installed\nPriority: required\nSection: System\n'
+                       f'Installed-Size: 0\nArchitecture: all\nVersion: {version}\nDescription: {desc}')
+        changes += 1
+    for ext in ('.list', '.md5sums'):
+        f = os.path.join(info, name + ext)
+        if not os.path.exists(f):
+            open(f, 'w').close(); changes += 1
+if changes:
+    open(status_path, 'w', encoding='utf-8').write('\n\n'.join(stanzas) + '\n\n')
+print(changes)
+PYTIDY
+}
+
 # get_ipsw: print the path of the iOS 16.5 IPSW: HACKIOS_IPSW if given, else one downloaded from Apple's
 # CDN into sysimage/ (resumed when a download broke off), checked by size and SHA-256
 get_ipsw() {
@@ -625,9 +761,16 @@ do_build() {
   # ElleKit into jb/, and their build puts it into the system image (/var/jb at run time)
   local jb=off system=
   if [ "${HACKIOS_JB:-1}" != 0 ]; then
+    # prep.sh is the last thing mk-jb.sh writes: a prefix without it is one a failed run left half made
+    # (no firmware package, shshd and libkrw0 still in, nothing run at boot), so it is made again
+    if [ -d jb/root/var/jb ] && [ ! -f jb/root/var/jb/prep.sh ]; then
+      log "jailbreak: the prefix in jb/ is from an unfinished tools/mk-jb.sh run - making it again"
+      rm -rf jb/root
+    fi
     if [ ! -d jb/root/var/jb ]; then
       log "jailbreak: HackiOS's tools/mk-jb.sh (Procursus rootless bootstrap, Sileo, ElleKit)"
       bash tools/mk-jb.sh | tail -2 || die "tools/mk-jb.sh failed (see above)"
+      system=1   # a new prefix: the system image (which carries it as /jb) is made again
     fi
     jb=on
   elif [ -d jb/root ]; then
@@ -656,6 +799,11 @@ do_build() {
   fi
   if [ "$(cat userland/.ios-tools-trollstore 2>/dev/null || echo off)" != "$want_ts" ]; then
     system=1; log "the system image is remade ($([ "$want_ts" = off ] && echo without || echo with) TrollStore)"
+  fi
+  # dpkg's database of the prefix made whole (see jb_dpkg_tidy)
+  if [ "$jb" = on ]; then
+    local tidy; tidy=$(jb_dpkg_tidy) || die "jb_dpkg_tidy failed (see above)"
+    if [ "$tidy" != 0 ]; then system=1; log "dpkg: $tidy change(s) to the prefix's database (the system image is remade)"; fi
   fi
   # their build remakes system.apfs only when its own inputs change: with the jailbreak (or NewTerm)
   # added or taken out it has to be remade too (userland/.ios-tools-jb / .ios-tools-newterm remember
