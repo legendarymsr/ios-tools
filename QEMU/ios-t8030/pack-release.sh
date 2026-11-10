@@ -64,6 +64,13 @@ PAYLOAD=(hackios.sh timesync/timesync-arm64 setup-debian-chroot.sh xz-arm64 LICE
 for f in "${PAYLOAD[@]}"; do
   cp -a "$HERE/$f" "$STAGE/payload/"
 done
+# the app runs its own copy (assets/payload): an APK built from other files than these is refused
+for f in "${PAYLOAD[@]}"; do
+  cmp -s "$HERE/$f" "$HERE/launcher-app/app/src/main/assets/payload/$(basename "$f")" \
+    || { echo "launcher-app/app/src/main/assets/payload/$(basename "$f") differs from $f: rebuild the APK (gradlew assembleDebug syncs it)"; exit 1; }
+done
+unzip -p "$APK" assets/payload/hackios.sh | cmp -s - "$HERE/hackios.sh" \
+  || { echo "the APK's assets/payload/hackios.sh is not this hackios.sh: rebuild the APK"; exit 1; }
 OUT="$HERE/qemu-t8030-launcher-v${VER}.zip"
 rm -f "$OUT"
 ( cd "$STAGE" && zip -qr "$OUT" META-INF module.prop customize.sh service.sh app payload )

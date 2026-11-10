@@ -4,7 +4,7 @@ Runs **iOS 16.5** in a VM on a rooted Android phone (tested target: Galaxy Z Fli
 **HackiOS** by **OOSEX GANG**, inside a Debian chroot. Packaged as a KernelSU/Magisk module that
 installs the **iOS VM (HackiOS)** launcher app. This launcher is not made by OOSEX GANG.
 
-- Module zip: **`qemu-t8030-launcher-v2.10.1.zip`** (the file name stays for module upgrades)
+- Module zip: **`qemu-t8030-launcher-v2.10.2.zip`** (the file name stays for module upgrades)
 - App package: `com.qemut8030.launcher` (label "iOS VM (HackiOS)")
 - App source: [`launcher-app/`](launcher-app/) · the script it runs: [`hackios.sh`](hackios.sh)
 - The old Inferno t8030 steps were removed in v2.0.0: see [INFERNO.md](INFERNO.md).
@@ -36,7 +36,7 @@ HakiOS 2.3.4's own changes (Metal, touch, the phone ports) are for the POCO X5 P
 
 ## Install
 
-1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.1.zip`, reboot.
+1. KernelSU manager → Modules → install `qemu-t8030-launcher-v2.10.2.zip`, reboot.
 2. Open "iOS VM (HackiOS)", grant root.
 
 Needs about 18 GB free storage for a first build (the 6.2 GB IPSW is deleted after unpacking) and about 3 GB free RAM while iOS runs.
@@ -223,6 +223,23 @@ instruction is translated in software (TCG). What helps:
   iOS 16.5 SDK, ad-hoc signed with `ldid`); `hackios.sh build` puts it into the image.
 - `setup-debian-chroot.sh` — the Debian chroot (step 1); `xz-arm64` (+ `LICENSE-xz`) unpacks it.
 - `pack-release.sh` — builds the module zip from the APK and these scripts.
+
+## v2.10.2: upgrading a phone from v2.9.x
+
+The launcher app runs the `hackios.sh` in its own assets (copied into the chroot at every step), and in
+v2.10.0 and v2.10.1 that copy was still v2.9.4's: the app kept the old pin (`8851317`) and layout check, so
+step 3 said "not set up yet (or the old layout)" and step 2 stopped at `git checkout` over the files
+v2.9.4 had edited in the HakiOS checkout (`qemu/run-ios.sh`, `xnuloader/loader.c`, ...). The fixes of v2.10.0
+and v2.10.1 reach the phone with this release. Now:
+- the APK's assets are synced from the module's files before every build (`syncPayload` in
+  `launcher-app/app/build.gradle.kts`), and `pack-release.sh` refuses an APK that carries another `hackios.sh`;
+- step 2 brings any older HakiOS checkout to the pin: origin set to upstream and fetching `main` only
+  (old clones track the deleted `hakios` branch), the pinned commit fetched when missing (shallow clones),
+  ios-tools' own edits to tracked files dropped (`reset --hard`, `checkout -f --detach`; made again at
+  step 3), nothing untracked or ignored deleted -- the unpacked iOS files, `jb/` and the images stay;
+  a snapshot of the old images is deleted;
+- step 3 does that update itself when the checkout is not the pinned one, so step 2 is not needed first;
+  step 4 on an old checkout says to run step 3.
 
 ## v2.10.1: Sileo and apt install packages again
 

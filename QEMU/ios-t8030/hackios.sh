@@ -99,15 +99,83 @@ install_7zip() {
   7z | head -2 | tail -1
 }
 
-checkout() { # checkout DIR URL PIN [GIT_DIR]: the pinned commit (or main with HACKIOS_REF=latest)
-  local d="$1" url="$2" pin="$3"
+# repo_update: the HakiOS checkout in $DIR at KERNEL_PIN (or upstream's main with HACKIOS_REF=latest),
+# from whatever an older ios-tools left there:
+#  - its own edits to their tracked files (fix_checkout's: qemu/run-ios.sh, xnuloader/loader.c, ... up to
+#    v2.9.4) are dropped (reset --hard + checkout -f touch tracked files only) and made again at the build
+#  - nothing untracked or ignored is deleted: the unpacked iOS files (sysimage/), the jailbreak (jb/),
+#    the images (userland/*.apfs), the snapshot and the IPSW stay
+#  - origin is set to upstream and fetches main only: old clones track the "hakios" branch, which is gone
+#  - the pinned commit is fetched when the clone does not have it (a shallow clone of an older pin)
+# Dies unless HEAD is the wanted commit with no edits to tracked files afterwards.
+repo_update() {
+  local d="$DIR" target before=
+  if [ ! -d "$d/.git" ]; then
+    log "cloning hakios-xnu-kernel into $d"
+    mkdir -p "$d" && git init -q "$d" || die "git init $d failed"
+  fi
+  # a git killed half way (Android stopping the app) leaves its lock behind
+  if ! pgrep -x git >/dev/null 2>&1; then rm -f "$d/.git/index.lock" "$d/.git/shallow.lock" "$d/.git/HEAD.lock"; fi
+  if git -C "$d" remote get-url origin >/dev/null 2>&1; then git -C "$d" remote set-url origin "$KERNEL_URL"
+  else git -C "$d" remote add origin "$KERNEL_URL"; fi
+  git -C "$d" config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
+  git -C "$d" config --unset-all branch.hakios.merge 2>/dev/null || true
+  before=$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null || true)
   if [ "${HACKIOS_REF:-pinned}" = latest ]; then
-    git -C "$d" fetch -q --depth 1 origin main && git -C "$d" checkout -q -f FETCH_HEAD
+    git -C "$d" fetch -q --depth 1 origin main || die "git fetch of upstream's main failed (network?)"
+    target=$(git -C "$d" rev-parse FETCH_HEAD)
   else
-    # -f: fix_checkout's edits to their files are dropped here and made again at the next build
-    git -C "$d" fetch -q --depth 1 origin "$pin" && git -C "$d" checkout -q -f "$pin"
+    target=$KERNEL_PIN
+    if ! git -C "$d" cat-file -e "$target^{commit}" 2>/dev/null; then
+      git -C "$d" fetch -q --depth 1 origin "$target" 2>/dev/null \
+        || git -C "$d" fetch -q origin main \
+        || die "git fetch from $KERNEL_URL failed (network?)"
+      git -C "$d" cat-file -e "$target^{commit}" 2>/dev/null || die "commit ${target:0:7} is not on $KERNEL_URL"
+    fi
+  fi
+  if [ -n "$before" ]; then git -C "$d" reset -q --hard 2>/dev/null || true; fi
+  git -C "$d" checkout -q -f --detach "$target" || die "git checkout ${target:0:7} failed (see above)"
+  [ "$(git -C "$d" rev-parse HEAD)" = "$target" ] && git -C "$d" diff --quiet HEAD \
+    || die "the HakiOS checkout is not clean at ${target:0:7} after the update"
+  if [ -n "$before" ] && [ "$before" != "$target" ]; then
+    log "HakiOS repository updated: ${before:0:7} -> ${target:0:7} (ios-tools' edits to it are made again at step 3)"
+    # a snapshot is of the old images: of no use any more, and a few GB
+    if [ -f "$DIR/qemu/hackios.snapshot" ]; then
+      rm -f "$DIR/qemu/hackios.snapshot" "$DIR/qemu/hackios.snapshot.key" "$DIR/qemu/hackios.snapshot.part"
+      log "the saved snapshot (of the old images) is deleted"
+    fi
   fi
 }
+
+# repo_current: the checkout is the one this script wants (the layout and, when pinned, the commit)
+repo_current() {
+  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/unpack.sh" ] && [ -f "$DIR/qemu/run-darwin.sh" ] || return 1
+  [ "${HACKIOS_REF:-pinned}" = latest ] && return 0
+  [ "$(git -C "$DIR" rev-parse -q --verify HEAD 2>/dev/null)" = "$KERNEL_PIN" ]
+}
+
+# repo_upgrade: repo_update, keeping the unpacked iOS files when select-system.py changed only in its
+# comments, and moving off the old two-repository layout
+repo_upgrade() {
+  # what sysimage/select-system.py chose is what sysimage/rootfs holds; their build refuses a select-system.py
+  # newer than the extraction. When the new one differs only in its comments (2026-11-06 against 2026-10-26:
+  # "iOS" became "Darwin"), the files already unpacked are kept instead of downloading the IPSW again.
+  local sel_before=; sel_before=$(select_code "$DIR/sysimage/select-system.py")
+  repo_update
+  if [ -f "$DIR/sysimage/.done-rootfs" ] && [ -n "$sel_before" ] && [ "$DIR/sysimage/select-system.py" -nt "$DIR/sysimage/.done-rootfs" ] \
+     && [ "$(select_code "$DIR/sysimage/select-system.py")" = "$sel_before" ]; then
+    touch "$DIR/sysimage/.done-rootfs"
+    log "sysimage/select-system.py changed only in its comments: the unpacked iOS 16.5 files are kept"
+  fi
+  # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
+  if [ -d "$DIR/.userland.git" ]; then
+    log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
+    rm -rf "$DIR/.userland.git" "$DIR/ios165" "$DIR/common"
+    git -C "$DIR" reset -q --hard && git -C "$DIR" clean -qfd -e sysimage -e jb -e qemu/hackios.snapshot\* || true
+  fi
+  log "HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD)"
+}
+
 
 # select_code FILE: a hash of select-system.py's code without its comments and docstrings ("" if absent)
 select_code() {
@@ -148,27 +216,7 @@ do_setup() {
   [ -f "$EFI_CODE" ] && [ -f "$EFI_VARS" ] || die "UEFI firmware missing ($EFI_CODE)"
   install_7zip
 
-  if [ ! -d "$DIR/.git" ]; then
-    log "cloning hackios-xnu-kernel into $DIR"
-    git init -q "$DIR" && git -C "$DIR" remote add origin "$KERNEL_URL"
-  fi
-  # what sysimage/select-system.py chose is what sysimage/rootfs holds; their build refuses a select-system.py
-  # newer than the extraction. When the new one differs only in its comments (2026-11-06 against 2026-10-26:
-  # "iOS" became "Darwin"), the files already unpacked are kept instead of downloading the IPSW again.
-  local sel_before=; sel_before=$(select_code "$DIR/sysimage/select-system.py")
-  checkout "$DIR" "$KERNEL_URL" "$KERNEL_PIN"
-  if [ -f "$DIR/sysimage/.done-rootfs" ] && [ -n "$sel_before" ] && [ "$DIR/sysimage/select-system.py" -nt "$DIR/sysimage/.done-rootfs" ] \
-     && [ "$(select_code "$DIR/sysimage/select-system.py")" = "$sel_before" ]; then
-    touch "$DIR/sysimage/.done-rootfs"
-    log "sysimage/select-system.py changed only in its comments: the unpacked iOS 16.5 files are kept"
-  fi
-  # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
-  if [ -d "$DIR/.userland.git" ]; then
-    log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
-    rm -rf "$DIR/.userland.git" "$DIR/ios165" "$DIR/common"
-    git -C "$DIR" reset -q --hard && git -C "$DIR" clean -qfd -e sysimage -e jb -e qemu/hackios.snapshot\* || true
-  fi
-  log "HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD)"
+  repo_upgrade
   log "setup done - next: step 3 (download iOS 16.5 + build the images)"
 }
 
@@ -736,7 +784,12 @@ get_ipsw() {
 
 do_build() {
   credit
-  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/unpack.sh" ] || die "not set up yet (or an older HakiOS checkout) - run step 2 first"
+  [ -d "$DIR/.git" ] || die "not set up yet - run step 2 first"
+  if ! repo_current; then
+    command -v git >/dev/null || die "git missing - run step 2 first"
+    log "the HakiOS checkout is not the one this ios-tools uses ($(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo none)): updating it"
+    repo_upgrade
+  fi
   command -v 7z >/dev/null || die "7z missing - run step 2 first"
   cd "$DIR"
   # their sysimage/unpack.sh needs the IPSW whenever something is still to be unpacked: the system's files,
@@ -936,6 +989,7 @@ PYQMP
 do_run() {
   credit
   cd "$DIR" 2>/dev/null || die "not set up yet - run step 2 first"
+  repo_current || die "the HakiOS checkout is from an older ios-tools - run step 3 (it updates it and remakes the images)"
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images yet - run step 3 first"
   [ -z "$(qemu_pids)" ] || die "HackiOS is already running (Power off VM stops it)"
   pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null && die "another iOS VM (qemu-t8030) is running on the same VNC port - stop it first"

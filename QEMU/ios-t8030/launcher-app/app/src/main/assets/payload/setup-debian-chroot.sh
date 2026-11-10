@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # setup-debian-chroot.sh
 # Set up a real Debian (glibc) chroot on a rooted Android phone, with /dev/kvm

@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # hackios.sh -- run HackiOS (iOS 16.5 user space on Apple's open-source XNU kernel) in QEMU's
 # `virt` machine inside this Debian chroot on the phone (launcher steps 2-4).
 #
 # HackiOS is by OOSEX GANG (@oodze, @netusd, @wannqn, @hxfuxyyXD):
 #   https://github.com/oosexgang  ·  https://hackios-web.vercel.app  ·  https://t.me/oosexgangdevs
-# hackios-xnu-kernel is APSL 2.0, hackios-xnu-userland is MIT. Nothing of theirs is copied into
-# ios-tools: this script clones their repositories at the commits pinned below and runs their own
+# hakios-xnu-kernel is APSL 2.0 (kernel) and MIT (user space). Nothing of theirs is copied into
+# ios-tools: this script clones their repository at the commit pinned below and runs their own
 # scripts. HackiOS is not affiliated with, authorised or endorsed by Apple Inc.; no Apple files are
-# shipped -- their sysimage/fetch.sh downloads iOS 16.5 from Apple's CDN onto this phone.
+# shipped -- this script downloads the iOS 16.5 IPSW from Apple's CDN onto this phone (HakiOS itself
+# no longer downloads anything: their sysimage/unpack.sh takes an IPSW you have) and their
+# sysimage/unpack.sh unpacks it.
 #
-#   hackios.sh setup    packages, 7-Zip 24.09 (APFS needs 7-Zip 23+), both HackiOS repositories
-#   hackios.sh build    download iOS 16.5 (7.4 GB, resumable), build HackiOS's loader and the
-#                       images root.apfs + system.apfs (HackiOS's prebuilt kernel and programs)
+#   hackios.sh setup    packages, 7-Zip 24.09 (APFS needs 7-Zip 23+), the HakiOS repository
+#   hackios.sh build    download the iOS 16.5 IPSW (6.2 GB, resumable, checked against its SHA-256)
+#                       and unpack it, build HackiOS's loader and the images root.apfs + system.apfs
+#                       (HackiOS's prebuilt kernel and programs)
 #   hackios.sh run      boot it: QEMU virt, display on VNC 127.0.0.1:5900, network on (QEMU_NET=1)
 #   hackios.sh save     save the running iOS to a snapshot (once it is on the home screen): the next
 #                       run resumes it in seconds instead of booting for many minutes (QEMU 8.2+)
@@ -43,7 +47,9 @@
 #      "/Applications /Library /usr /bin /sbin"),
 #      HACKIOS_WALLPAPER=0 (keep iOS's stock default wallpaper instead of the black one; next build),
 #      HACKIOS_FBSCALE=2 (render the UI at 2x and upscale: less CPU per frame, a bit softer; it did not
-#      change the frame rate in testing, so the default is native 3).
+#      change the frame rate in testing, so the default is native 3),
+#      HACKIOS_IPSW=<path> (use this iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw instead of downloading
+#      it), HACKIOS_KEEP_IPSW=1 (keep the downloaded IPSW after unpacking; it is deleted by default).
 set -euo pipefail
 DIR="${HACKIOS_DIR:-/root/hackios}"
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -53,7 +59,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck disable=SC1091
 [ -f "$HERE/.hackios-env" ] && . "$HERE/.hackios-env" || true
 KERNEL_URL=https://github.com/oosexgang/hakios-xnu-kernel.git    # kernel + user space in one repository since 2026-10-25
-KERNEL_PIN=88513176b1e96ecf0b764cd62c6f4e6ac71345e3     # 2026-10-26 "Update README.md"
+KERNEL_PIN=63fc2b4633bac3af8e57dadab9f5a8d4cb940438     # 2026-11-06 HakiOS 2.3.4 + PRs #53/#54 (main)
+# the IPSW HakiOS's sysimage/unpack.sh is made for (it refuses any other size)
+IPSW_NAME=iPhone10,3,iPhone10,6_16.5_20F66_Restore.ipsw
+IPSW_URL=https://updates.cdn-apple.com/2023SpringFCS/fullrestores/032-85130/6AB0D10A-8AF9-4F6C-8CF5-A1B315CABE88/$IPSW_NAME
+IPSW_SIZE=6165698198
+IPSW_SHA256=c1091c401f67e3aa7cdfeb2cc19e6c79be3c957aae4e097a019e9ccea07d52f2
 SEVENZIP_VER=2409
 declare -A SEVENZIP_SHA=(
   [arm64]=fbe331697c9417bbc06fc92d3f4576dca6a5a1442fad7ae810304446a9153e2c
@@ -88,19 +99,103 @@ install_7zip() {
   7z | head -2 | tail -1
 }
 
-checkout() { # checkout DIR URL PIN [GIT_DIR]: the pinned commit (or main with HACKIOS_REF=latest)
-  local d="$1" url="$2" pin="$3"
-  if [ "${HACKIOS_REF:-pinned}" = latest ]; then
-    git -C "$d" fetch -q --depth 1 origin main && git -C "$d" checkout -q FETCH_HEAD
-  else
-    git -C "$d" fetch -q --depth 1 origin "$pin" && git -C "$d" checkout -q "$pin"
+# repo_update: the HakiOS checkout in $DIR at KERNEL_PIN (or upstream's main with HACKIOS_REF=latest),
+# from whatever an older ios-tools left there:
+#  - its own edits to their tracked files (fix_checkout's: qemu/run-ios.sh, xnuloader/loader.c, ... up to
+#    v2.9.4) are dropped (reset --hard + checkout -f touch tracked files only) and made again at the build
+#  - nothing untracked or ignored is deleted: the unpacked iOS files (sysimage/), the jailbreak (jb/),
+#    the images (userland/*.apfs), the snapshot and the IPSW stay
+#  - origin is set to upstream and fetches main only: old clones track the "hakios" branch, which is gone
+#  - the pinned commit is fetched when the clone does not have it (a shallow clone of an older pin)
+# Dies unless HEAD is the wanted commit with no edits to tracked files afterwards.
+repo_update() {
+  local d="$DIR" target before=
+  if [ ! -d "$d/.git" ]; then
+    log "cloning hakios-xnu-kernel into $d"
+    mkdir -p "$d" && git init -q "$d" || die "git init $d failed"
   fi
+  # a git killed half way (Android stopping the app) leaves its lock behind
+  if ! pgrep -x git >/dev/null 2>&1; then rm -f "$d/.git/index.lock" "$d/.git/shallow.lock" "$d/.git/HEAD.lock"; fi
+  if git -C "$d" remote get-url origin >/dev/null 2>&1; then git -C "$d" remote set-url origin "$KERNEL_URL"
+  else git -C "$d" remote add origin "$KERNEL_URL"; fi
+  git -C "$d" config remote.origin.fetch '+refs/heads/main:refs/remotes/origin/main'
+  git -C "$d" config --unset-all branch.hakios.merge 2>/dev/null || true
+  before=$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null || true)
+  if [ "${HACKIOS_REF:-pinned}" = latest ]; then
+    git -C "$d" fetch -q --depth 1 origin main || die "git fetch of upstream's main failed (network?)"
+    target=$(git -C "$d" rev-parse FETCH_HEAD)
+  else
+    target=$KERNEL_PIN
+    if ! git -C "$d" cat-file -e "$target^{commit}" 2>/dev/null; then
+      git -C "$d" fetch -q --depth 1 origin "$target" 2>/dev/null \
+        || git -C "$d" fetch -q origin main \
+        || die "git fetch from $KERNEL_URL failed (network?)"
+      git -C "$d" cat-file -e "$target^{commit}" 2>/dev/null || die "commit ${target:0:7} is not on $KERNEL_URL"
+    fi
+  fi
+  if [ -n "$before" ]; then git -C "$d" reset -q --hard 2>/dev/null || true; fi
+  git -C "$d" checkout -q -f --detach "$target" || die "git checkout ${target:0:7} failed (see above)"
+  [ "$(git -C "$d" rev-parse HEAD)" = "$target" ] && git -C "$d" diff --quiet HEAD \
+    || die "the HakiOS checkout is not clean at ${target:0:7} after the update"
+  if [ -n "$before" ] && [ "$before" != "$target" ]; then
+    log "HakiOS repository updated: ${before:0:7} -> ${target:0:7} (ios-tools' edits to it are made again at step 3)"
+    # a snapshot is of the old images: of no use any more, and a few GB
+    if [ -f "$DIR/qemu/hackios.snapshot" ]; then
+      rm -f "$DIR/qemu/hackios.snapshot" "$DIR/qemu/hackios.snapshot.key" "$DIR/qemu/hackios.snapshot.part"
+      log "the saved snapshot (of the old images) is deleted"
+    fi
+  fi
+}
+
+# repo_current: the checkout is the one this script wants (the layout and, when pinned, the commit)
+repo_current() {
+  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/unpack.sh" ] && [ -f "$DIR/qemu/run-darwin.sh" ] || return 1
+  [ "${HACKIOS_REF:-pinned}" = latest ] && return 0
+  [ "$(git -C "$DIR" rev-parse -q --verify HEAD 2>/dev/null)" = "$KERNEL_PIN" ]
+}
+
+# repo_upgrade: repo_update, keeping the unpacked iOS files when select-system.py changed only in its
+# comments, and moving off the old two-repository layout
+repo_upgrade() {
+  # what sysimage/select-system.py chose is what sysimage/rootfs holds; their build refuses a select-system.py
+  # newer than the extraction. When the new one differs only in its comments (2026-11-06 against 2026-10-26:
+  # "iOS" became "Darwin"), the files already unpacked are kept instead of downloading the IPSW again.
+  local sel_before=; sel_before=$(select_code "$DIR/sysimage/select-system.py")
+  repo_update
+  if [ -f "$DIR/sysimage/.done-rootfs" ] && [ -n "$sel_before" ] && [ "$DIR/sysimage/select-system.py" -nt "$DIR/sysimage/.done-rootfs" ] \
+     && [ "$(select_code "$DIR/sysimage/select-system.py")" = "$sel_before" ]; then
+    touch "$DIR/sysimage/.done-rootfs"
+    log "sysimage/select-system.py changed only in its comments: the unpacked iOS 16.5 files are kept"
+  fi
+  # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
+  if [ -d "$DIR/.userland.git" ]; then
+    log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
+    rm -rf "$DIR/.userland.git" "$DIR/ios165" "$DIR/common"
+    git -C "$DIR" reset -q --hard && git -C "$DIR" clean -qfd -e sysimage -e jb -e qemu/hackios.snapshot\* || true
+  fi
+  log "HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD)"
+}
+
+
+# select_code FILE: a hash of select-system.py's code without its comments and docstrings ("" if absent)
+select_code() {
+  [ -f "$1" ] || return 0
+  python3 - "$1" <<'PYSEL' 2>/dev/null || true
+import ast, hashlib, sys
+tree = ast.parse(open(sys.argv[1]).read())
+for node in ast.walk(tree):
+    body = getattr(node, "body", None)
+    if isinstance(body, list) and body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body.pop(0)
+print(hashlib.sha256(ast.dump(tree).encode()).hexdigest())
+PYSEL
 }
 
 do_setup() {
   credit
-  local need_gb=14 have; have=$(free_gb "$(dirname "$DIR")")
-  [ -n "$have" ] && [ "$have" -lt "$need_gb" ] && log "WARNING: only ${have} GB free; download + images need about ${need_gb} GB"
+  local need_gb=18 have; have=$(free_gb "$(dirname "$DIR")")
+  [ -n "$have" ] && [ "$have" -lt "$need_gb" ] && log "WARNING: only ${have} GB free; the IPSW + unpacking + images need about ${need_gb} GB at the peak (about 8 GB afterwards)"
   log "installing packages (git, python3, gcc, QEMU for aarch64, UEFI firmware)"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -q || true
@@ -121,37 +216,23 @@ do_setup() {
   [ -f "$EFI_CODE" ] && [ -f "$EFI_VARS" ] || die "UEFI firmware missing ($EFI_CODE)"
   install_7zip
 
-  if [ ! -d "$DIR/.git" ]; then
-    log "cloning hackios-xnu-kernel into $DIR"
-    git init -q "$DIR" && git -C "$DIR" remote add origin "$KERNEL_URL"
-  fi
-  checkout "$DIR" "$KERNEL_URL" "$KERNEL_PIN"
-  # the old two-repository layout (hackios-xnu-userland checked out over this tree): start afresh
-  if [ -d "$DIR/.userland.git" ]; then
-    log "the user space moved into the kernel repository upstream: removing the old .userland.git checkout"
-    rm -rf "$DIR/.userland.git" "$DIR/ios165" "$DIR/common"
-    git -C "$DIR" reset -q --hard && git -C "$DIR" clean -qfd -e sysimage -e jb -e qemu/hackios.snapshot\* || true
-  fi
-  log "HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD)"
+  repo_upgrade
   log "setup done - next: step 3 (download iOS 16.5 + build the images)"
 }
 
-# Fixes to HackiOS's checkout (pinned commits), each applied once; report them upstream:
-#  - userland/build.sh copies obj/drawable_test, which prebuilt/userland does not have (PREBUILT=1 stops)
-#  - userland/build.sh asks timedatectl for the time zone under set -e; without systemd (this chroot)
-#    the build stops there without a message
-#  - userland/mkjobs.py reuses the loop variable `name` for RWA_PACKED16, so the ~400 on-demand iOS
-#    jobs (REST=1: configd, mDNSResponder, trustd, nsurlsessiond, ...) all overwrite one file named
-#    RWA_PACKED16 and none of them can start: no DHCP, no DNS, Safari "not connected to the Internet"
-#  - (not bugs: two switches for snapshots, default unchanged) qemu/run.sh mounts the ESP read-write
-#    and qemu/run-ios.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
+# Changes to HackiOS's checkout (pinned commit), each applied once. The bugs once fixed here are fixed
+# upstream (the timedatectl stop, the RWA_PACKED16 job names, drawable_test; and since 2026-10-27 the
+# ramfb DMA read-back, through a volatile), so they are no longer patched. What is left is ours:
+#  - two switches for snapshots, default unchanged: qemu/run.sh mounts the ESP read-write and
+#    qemu/run-darwin.sh always adds virtio-sound; QEMU refuses to save a VM with either, so
 #    QEMU_ESP_RW= QEMU_ESP_RO=1 mounts it read-only and QEMU_SOUND=0 leaves the sound device out
-#  - (not bugs, ours) userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none
-#    (the launcher passes Android's), copies obj/timesync into the image when it is there, and
-#    qemu/run-ios.sh passes QEMU_NET_EXTRA to the user network (the host's clock for timesync)
-#  - xnuloader/loader.c reads back the fw_cfg DMA answer through a plain variable, so -O1 folds the
-#    check and the prebuilt loader.efi always gives up on the 1125x2436 ramfb: black screen
-#  - (not a bug, ours) QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
+#  - userland/build.sh takes the time zone from HACKIOS_TZ when timedatectl has none (the launcher
+#    passes Android's), and qemu/run-darwin.sh passes QEMU_NET_EXTRA to the user network (the
+#    host's clock for timesync, the ssh port)
+#  - tools/jb-preinstall.py passes tarfile's filter= argument, which Python only has from 3.11.4 (3.12):
+#    Debian bookworm's 3.11.2 (this chroot) stops mk-jb.sh with a TypeError. Without the argument the
+#    old behaviour is the fully trusted one it asks for anyway
+#  - QEMU's VNC server drops every row below 2160 (ui/vnc.h VNC_MAX_HEIGHT), which
 #    cut iOS's dock off in the launcher's viewer. The loader makes the ramfb PANEL 944x2048 (<=2048,
 #    iOS's aspect); iOS still renders 1125x2436 and the kernel scales it onto the panel, exactly as it
 #    scales to the real phone's 1080x2400, so the UI is unchanged
@@ -160,21 +241,21 @@ fix_checkout() {
 import pathlib, sys
 d = pathlib.Path(sys.argv[1])
 fixes = [
-  ("userland/build.sh",
-   "zone=$(timedatectl show -p Timezone --value 2>/dev/null); ",
-   "zone=$(timedatectl show -p Timezone --value 2>/dev/null || true); "),
   ("qemu/run.sh",
    "-drive file=fat:rw:esp,format=raw,if=virtio ",
    "-drive file=fat:${QEMU_ESP_RW-rw:}esp,format=raw,if=virtio${QEMU_ESP_RO:+,readonly=on} "),
-  ("qemu/run-ios.sh",
+  ("qemu/run-darwin.sh",
    "if qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then",
    "if [ \"${QEMU_SOUND:-1}\" != 0 ] && qemu-system-aarch64 -device help 2>/dev/null | grep -q '\"virtio-sound-device\"'; then"),
   ("userland/build.sh",
    "zone=${zone:-UTC}",
    "zone=${zone:-${HACKIOS_TZ:-UTC}}"),
-  ("qemu/run-ios.sh",
+  ("qemu/run-darwin.sh",
    "\tNET=(-netdev user,id=net0 -device virtio-net-device,netdev=net0)\n",
    "\tNET=(-netdev \"user,id=net0${QEMU_NET_EXTRA:+,$QEMU_NET_EXTRA}\" -device virtio-net-device,netdev=net0)\n"),
+  ("tools/jb-preinstall.py",
+   "tar.extract(member, prefix, set_attrs=True, filter='fully_trusted')",
+   "tar.extract(member, prefix, set_attrs=True, **({'filter': 'fully_trusted'} if hasattr(tarfile, 'fully_trusted_filter') else {}))"),
   ("xnuloader/loader.c",
    "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n",
    "#define PHONE_WIDTH     1125            /* the screen of the iPhone X, whose identity we carry */\n#define PHONE_HEIGHT    2436\n"
@@ -190,12 +271,6 @@ fixes = [
   ("xnuloader/loader.c",
    "\tSCREEN.width = PHONE_WIDTH;\n\tSCREEN.height = PHONE_HEIGHT;\n\tSCREEN.stride = PHONE_WIDTH * 4;",
    "\tSCREEN.width = PANEL_WIDTH;\n\tSCREEN.height = PANEL_HEIGHT;\n\tSCREEN.stride = PANEL_WIDTH * 4;"),
-  ("xnuloader/loader.c",
-   "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n\tif (dma.control != 0) {\n",
-   "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
-   "\t*(volatile uint64_t *)(FW_CFG_BASE + 16) = __builtin_bswap64((uint64_t)(uintptr_t)&dma);\n"
-   "\t__asm__ volatile(\"dsb sy\" ::: \"memory\");\n"
-   "\tif (*(volatile uint32_t *)&dma.control != 0) {\n"),
 ]
 for f, old, new in fixes:
     p = d / f; s = p.read_text()
@@ -232,6 +307,11 @@ JOBS
     cat >> "$f" <<'JOBS'
 /var/jb/bin/sh /var/jb/prep.sh
 JOBS
+    # ios-tools: dpkg's records of the packages prep.sh's firmware program just wrote (firmware, cy+*, gsc.*)
+    # get their (empty) file lists, so dpkg --audit has nothing to say about them
+    if [ -f "$DIR/jb/root/var/jb/usr/libexec/ios-tools/dpkg-tidy.sh" ]; then
+      printf '/var/jb/bin/sh /var/jb/usr/libexec/ios-tools/dpkg-tidy.sh\n' >> "$f"
+    fi
     # ssh into iOS (opt-in): HACKIOS_SSH_KEY=<public key file> puts that key in /var/root/.ssh through
     # their build's ssh/ directory (with a host key made here; SHARE=1 images never carry them) and
     # starts the prefix's sshd; `run` forwards 127.0.0.1:${HACKIOS_SSH_PORT:-2222} to it. This is how
@@ -428,6 +508,7 @@ for n in want:
       if curl -fsSL --retry 3 -o "$tmp/dep.deb" "$PROCURSUS_MIRROR/$fn"; then
         if deb_extract "$tmp/dep.deb" "$root"; then
           dpkg_record "$st" "$pkg" "$ver" "$arch" "$dep"; n=$((n+1))
+          cp -f "$tmp/dep.deb" "$DIR/jb/debs/ios-tools-$pkg.deb" 2>/dev/null || true   # for jb_dpkg_tidy
         fi
       else
         log "NewTerm: dependency $pkg could not be downloaded (continuing)"
@@ -484,6 +565,7 @@ bundle_trollstore() {
     [ -x "$tmp/th/var/jb/Applications/TrollStorePersistenceHelper.app/trollstorehelper" ] \
       || { log "TrollStore: not the rootless TrollHelper deb - left out"; return 1; }
     cp -a "$tmp/th/." "$root/"
+    cp -f "$deb" "$DIR/jb/debs/ios-tools-trollhelper.deb" 2>/dev/null || true   # for jb_dpkg_tidy
     dpkg_record "$root/var/jb/Library/dpkg/status" com.opa334.trollstorehelper \
       "$(deb_field "$deb" Version || echo 0)" iphoneos-arm64
   fi
@@ -552,37 +634,196 @@ unbundle_trollstore() {
   sed -i '/^Package: com\.opa334\.trollstorehelper$/,/^$/d' "$root/var/jb/Library/dpkg/status" 2>/dev/null || true
 }
 
+# jb_dpkg_tidy (ios-tools): make the prefix's dpkg database consistent, so that apt and Sileo install packages.
+#  - every package written into dpkg's status by hand (mk-jb.sh: Sileo, ElleKit, its PREINSTALL list; ours:
+#    NewTerm and its dependencies, TrollHelper) gets its file list and md5sums from its .deb, and NewTerm's and
+#    TrollHelper's records the whole control of their .deb (dpkg wants Description and Maintainer)
+#  - the packages Procursus's /var/jb/usr/libexec/firmware writes at every boot (prep.sh runs it) are put in
+#    already, with the values that program wrote in this VM (iOS 16.5, iPhone10,3, Darwin 22.5.0): "firmware"
+#    is in no repository -- apt has "no installation candidate" for it -- and Sileo, snaputil, NewTerm and much
+#    of Procursus depend on it, so a prefix without it cannot install anything; firmware rewrites them at boot
+#  - shshd, libkrw0 and libdimentio0 out, as mk-jb.sh takes them out: nothing provides libkrw0-plugin here
+#    (the kernel is HakiOS's own), and one unmet dependency in the database stops every install
+#  - the boot script dpkg-tidy.sh gives the gsc.* records that firmware writes at boot their empty file lists
+# Prints the number of changes. Idempotent.
+jb_dpkg_tidy() {
+  local root="$DIR/jb/root" lib="$DIR/jb/root/var/jb/usr/libexec/ios-tools"
+  [ -f "$root/var/jb/Library/dpkg/status" ] || { echo 0; return 0; }
+  mkdir -p "$lib" "$DIR/jb/debs"
+  # TrollHelper bundled by an older ios-tools: its .deb again, for the file list
+  if grep -q '^Package: com\.opa334\.trollstorehelper$' "$root/var/jb/Library/dpkg/status" \
+     && [ ! -f "$root/var/jb/Library/dpkg/info/com.opa334.trollstorehelper.list" ] && [ ! -f "$DIR/jb/debs/ios-tools-trollhelper.deb" ]; then
+    local v; v=$(awk '/^Package: com\.opa334\.trollstorehelper$/{f=1} f&&/^Version:/{print $2; exit}' "$root/var/jb/Library/dpkg/status")
+    [ -n "$v" ] && ts_fetch "com.opa334.trollstorehelper_${v}_iphoneos-arm64.deb" "$DIR/jb/debs/ios-tools-trollhelper.deb" >&2 \
+      || { rm -f "$DIR/jb/debs/ios-tools-trollhelper.deb"; log "dpkg: TrollHelper $v .deb not found, its file list is left empty" >&2; }
+  fi
+  cat > "$lib/dpkg-tidy.sh.new" <<'TIDY'
+#!/var/jb/bin/sh
+# ios-tools: empty file lists for the records /var/jb/usr/libexec/firmware writes (firmware, cy+*, gsc.*: no files)
+I=/var/jb/Library/dpkg/info
+while IFS= read -r line; do
+  case "$line" in
+  "Package: firmware"|"Package: cy+"*|"Package: gsc."*)
+    p=${line#Package: }
+    [ -e "$I/$p.list" ] || : > "$I/$p.list"
+    [ -e "$I/$p.md5sums" ] || : > "$I/$p.md5sums" ;;
+  esac
+done < /var/jb/Library/dpkg/status
+exit 0
+TIDY
+  local n=0
+  if ! cmp -s "$lib/dpkg-tidy.sh.new" "$lib/dpkg-tidy.sh"; then mv -f "$lib/dpkg-tidy.sh.new" "$lib/dpkg-tidy.sh"; n=1
+  else rm -f "$lib/dpkg-tidy.sh.new"; fi
+  chmod 0755 "$lib/dpkg-tidy.sh"
+  local d debs=()
+  for d in "$DIR"/jb/debs/*.deb "$HERE"/ws.hbang.newterm3*.deb "${NEWTERM_DEB:-}"; do [ -n "$d" ] && [ -f "$d" ] && debs+=("$d"); done
+  python3 - "$root/var/jb" "$n" "${debs[@]}" <<'PYTIDY'
+import hashlib, io, os, subprocess, sys, tarfile
+jb, changes, debs = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+info = os.path.join(jb, 'Library/dpkg/info')
+status_path = os.path.join(jb, 'Library/dpkg/status')
+stanzas = [s for s in open(status_path, encoding='utf-8').read().split('\n\n') if s.strip()]
+def field(st, k):
+    for line in st.split('\n'):
+        if line.startswith(k + ':'):
+            return line.split(':', 1)[1].strip()
+    return ''
+def installed(name):
+    return [i for i, st in enumerate(stanzas) if field(st, 'Package') == name and 'install ok installed' in field(st, 'Status')]
+# 1. what nothing can satisfy here goes, files and all (as tools/mk-jb.sh does)
+for name in ('shshd', 'libkrw0', 'libdimentio0'):
+    if not installed(name):
+        continue
+    lst = os.path.join(info, name + '.list')
+    if os.path.exists(lst):
+        for path in open(lst).read().split('\n'):
+            full = os.path.join(jb, os.path.relpath(path, '/var/jb')) if path.startswith('/var/jb/') else None
+            if full and os.path.isfile(full) and not os.path.islink(full):
+                os.unlink(full)
+    for f in os.listdir(info):
+        if f.startswith(name + '.'):
+            os.unlink(os.path.join(info, f))
+    stanzas = [st for st in stanzas if field(st, 'Package') != name]
+    changes += 1
+# 2. file lists, md5sums and whole records from the .debs
+for deb in debs:
+    try:
+        ctrl = subprocess.run(['dpkg-deb', '-f', deb], capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        continue
+    name = field(ctrl, 'Package')
+    hits = installed(name)
+    if not name or not hits or field(stanzas[hits[0]], 'Version') != field(ctrl, 'Version'):
+        continue
+    st = stanzas[hits[0]]
+    if not field(st, 'Description') or not field(st, 'Maintainer'):
+        stanzas[hits[0]] = '\n'.join(l for l in ctrl.split('\n') if l.strip()) + '\nStatus: install ok installed'
+        changes += 1
+    lst, md5 = os.path.join(info, name + '.list'), os.path.join(info, name + '.md5sums')
+    if os.path.exists(lst) and os.path.exists(md5):
+        continue
+    data = subprocess.run(['dpkg-deb', '--fsys-tarfile', deb], capture_output=True, check=True).stdout
+    paths, sums = [], []
+    with tarfile.open(fileobj=io.BytesIO(data)) as t:
+        for m in t.getmembers():
+            p = os.path.normpath(m.name.lstrip('.')).lstrip('/')
+            paths.append('/.' if p in ('', '.') else '/' + p)
+            if m.isfile():
+                sums.append(f"{hashlib.md5(t.extractfile(m).read()).hexdigest()}  {p}")
+    if not os.path.exists(lst):
+        open(lst, 'w').write('\n'.join(dict.fromkeys(paths)) + '\n'); changes += 1
+    if not os.path.exists(md5):
+        open(md5, 'w').write('\n'.join(sums) + ('\n' if sums else '')); changes += 1
+# 3. firmware and the cy+ packages, as /var/jb/usr/libexec/firmware writes them on this VM (it rewrites them at boot)
+virtual = [('firmware', '16.5', 'almost impressive Apple frameworks'),
+           ('cy+os.iphoneos', '16.5', 'virtual operating system dependency'),
+           ('cy+cpu.arm64', '0', 'virtual CPU dependency'),
+           ('cy+cpu.arm64v8', '0', 'virtual CPU dependency'),
+           ('cy+model.iphone', '10.3', 'virtual model dependency'),
+           ('cy+kernel.darwin', '22.5.0', 'virtual kernel dependency'),
+           ('cy+lib.corefoundation', '1977.00', 'virtual corefoundation dependency')]
+for name, version, desc in virtual:
+    if not installed(name):
+        stanzas.append(f'Package: {name}\nEssential: yes\nStatus: install ok installed\nPriority: required\nSection: System\n'
+                       f'Installed-Size: 0\nArchitecture: all\nVersion: {version}\nDescription: {desc}')
+        changes += 1
+    for ext in ('.list', '.md5sums'):
+        f = os.path.join(info, name + ext)
+        if not os.path.exists(f):
+            open(f, 'w').close(); changes += 1
+if changes:
+    open(status_path, 'w', encoding='utf-8').write('\n\n'.join(stanzas) + '\n\n')
+print(changes)
+PYTIDY
+}
+
+# get_ipsw: print the path of the iOS 16.5 IPSW: HACKIOS_IPSW if given, else one downloaded from Apple's
+# CDN into sysimage/ (resumed when a download broke off), checked by size and SHA-256
+get_ipsw() {
+  if [ -n "${HACKIOS_IPSW:-}" ]; then
+    [ -f "$HACKIOS_IPSW" ] || die "HACKIOS_IPSW=$HACKIOS_IPSW: no such file"
+    log "IPSW: $HACKIOS_IPSW" >&2; echo "$HACKIOS_IPSW"; return
+  fi
+  local f="$DIR/sysimage/$IPSW_NAME"
+  if [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" != "$IPSW_SIZE" ]; then
+    log "downloading the iOS 16.5 (20F66) IPSW from Apple's CDN (6.2 GB, resumes if interrupted)" >&2
+    local n=0
+    until [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" = "$IPSW_SIZE" ]; do
+      n=$((n + 1)); [ $n -le 20 ] || die "the IPSW download did not finish (run step 3 again to resume)"
+      curl -fL --retry 5 --retry-delay 5 -C - -o "$f" "$IPSW_URL" >&2 || sleep 5
+      [ "$(stat -c %s "$f" 2>/dev/null || echo 0)" -le "$IPSW_SIZE" ] || { rm -f "$f"; log "oversized download: starting over" >&2; }
+    done
+  fi
+  if [ ! -f "$f.ok" ]; then
+    log "checking the IPSW (SHA-256)" >&2
+    echo "$IPSW_SHA256  $f" | sha256sum -c --quiet - >&2 || { rm -f "$f"; die "the IPSW has the wrong checksum: deleted, run step 3 again"; }
+    touch "$f.ok"
+  fi
+  echo "$f"
+}
+
 do_build() {
   credit
-  [ -f "$DIR/userland/build.sh" ] && [ -f "$DIR/sysimage/fetch.sh" ] || die "not set up yet (or the old layout) - run step 2 first"
+  [ -d "$DIR/.git" ] || die "not set up yet - run step 2 first"
+  if ! repo_current; then
+    command -v git >/dev/null || die "git missing - run step 2 first"
+    log "the HakiOS checkout is not the one this ios-tools uses ($(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo none)): updating it"
+    repo_upgrade
+  fi
   command -v 7z >/dev/null || die "7z missing - run step 2 first"
   cd "$DIR"
-  if [ ! -f sysimage/.done-rootfs ] || [ ! -f sysimage/.done-cryptex ] || [ ! -f sysimage/.done-cryptex-app ]; then
-    log "downloading iOS 16.5 (20F66) from Apple's CDN and extracting it (7.4 GB, resumes if interrupted)"
-    bash sysimage/fetch.sh
+  # their sysimage/unpack.sh needs the IPSW whenever something is still to be unpacked: the system's files,
+  # or the device tree the loader's identity is made from (xnuloader/mkidentity.sh, when identity.h is not there)
+  if [ ! -f sysimage/.done-rootfs ] || [ ! -f sysimage/.done-cryptex ] || [ ! -f sysimage/.done-cryptex-app ] \
+     || [ sysimage/select-system.py -nt sysimage/.done-rootfs ] \
+     || { [ ! -f xnuloader/identity.h ] && [ ! -f sysimage/DeviceTree.d22ap.im4p ]; }; then
+    local ipsw; ipsw=$(get_ipsw)
+    log "unpacking iOS 16.5 from the IPSW (HakiOS's sysimage/unpack.sh)"
+    bash sysimage/unpack.sh "$ipsw" || die "sysimage/unpack.sh failed (see above)"
+    if [ "$ipsw" = "$DIR/sysimage/$IPSW_NAME" ] && [ "${HACKIOS_KEEP_IPSW:-0}" != 1 ]; then
+      rm -f "$ipsw" "$ipsw.ok"; log "the downloaded IPSW is deleted (HACKIOS_KEEP_IPSW=1 keeps it)"
+    fi
   else
-    log "iOS 16.5 files already extracted"
+    log "iOS 16.5 files already unpacked"
   fi
   fix_checkout
-  # their xnuloader/mkidentity.sh builds lzfse with `make lzfse`, a target lzfse's Makefile does not
-  # have; build it with the default target into the place mkidentity.sh looks first
-  if ! command -v lzfse >/dev/null && [ ! -x "$DIR/xnu-deps/host/bin/lzfse" ]; then
-    log "building lzfse (BSD, github.com/lzfse/lzfse) for the loader's device tree"
-    local lz; lz=$(mktemp -d)
-    git clone -q --depth 1 https://github.com/lzfse/lzfse "$lz/lzfse" && make -s -C "$lz/lzfse" >/dev/null \
-      && mkdir -p "$DIR/xnu-deps/host/bin" && cp "$lz/lzfse/build/bin/lzfse" "$DIR/xnu-deps/host/bin/" \
-      || log "WARNING: lzfse did not build"
-    rm -rf "$lz"
-  fi
+  # (lzfse for the device tree: their xnuloader/mkidentity.sh builds it right itself since 2026-11-03)
   log "building HackiOS's loader (xnuloader/loader.efi)"
   bash xnuloader/build.sh >/dev/null || die "the loader did not build (clang/lld from step 2?)"
   # the jailbreak, HackiOS's own: tools/mk-jb.sh fetches the Procursus rootless bootstrap, Sileo and
   # ElleKit into jb/, and their build puts it into the system image (/var/jb at run time)
   local jb=off system=
   if [ "${HACKIOS_JB:-1}" != 0 ]; then
+    # prep.sh is the last thing mk-jb.sh writes: a prefix without it is one a failed run left half made
+    # (no firmware package, shshd and libkrw0 still in, nothing run at boot), so it is made again
+    if [ -d jb/root/var/jb ] && [ ! -f jb/root/var/jb/prep.sh ]; then
+      log "jailbreak: the prefix in jb/ is from an unfinished tools/mk-jb.sh run - making it again"
+      rm -rf jb/root
+    fi
     if [ ! -d jb/root/var/jb ]; then
       log "jailbreak: HackiOS's tools/mk-jb.sh (Procursus rootless bootstrap, Sileo, ElleKit)"
       bash tools/mk-jb.sh | tail -2 || die "tools/mk-jb.sh failed (see above)"
+      system=1   # a new prefix: the system image (which carries it as /jb) is made again
     fi
     jb=on
   elif [ -d jb/root ]; then
@@ -611,6 +852,11 @@ do_build() {
   fi
   if [ "$(cat userland/.ios-tools-trollstore 2>/dev/null || echo off)" != "$want_ts" ]; then
     system=1; log "the system image is remade ($([ "$want_ts" = off ] && echo without || echo with) TrollStore)"
+  fi
+  # dpkg's database of the prefix made whole (see jb_dpkg_tidy)
+  if [ "$jb" = on ]; then
+    local tidy; tidy=$(jb_dpkg_tidy) || die "jb_dpkg_tidy failed (see above)"
+    if [ "$tidy" != 0 ]; then system=1; log "dpkg: $tidy change(s) to the prefix's database (the system image is remade)"; fi
   fi
   # their build remakes system.apfs only when its own inputs change: with the jailbreak (or NewTerm)
   # added or taken out it has to be remade too (userland/.ios-tools-jb / .ios-tools-newterm remember
@@ -699,7 +945,7 @@ qemu_ok_for_snapshots() {
 snap_key() {
   ( cd "$DIR" && qemu-system-aarch64 --version | head -1
     echo "smp=${HACKIOS_SMP:-4} ram=${HACKIOS_RAM_GB:-7} net=${HACKIOS_NET:-1} fbscale=${HACKIOS_FBSCALE:-3} cmdline=${HACKIOS_CMDLINE:-}"
-    stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi prebuilt/mach.development.bcm2837 2>/dev/null
+    stat -c '%n %s %Y' userland/root.apfs userland/system.apfs xnuloader/loader.efi hakios-kernel prebuilt/hakios-kernel 2>/dev/null
   ) | sha256sum | cut -d' ' -f1
 }
 # qmp COMMAND-JSON...: send QMP commands to the running QEMU, print each answer; `wait-migration`
@@ -743,6 +989,7 @@ PYQMP
 do_run() {
   credit
   cd "$DIR" 2>/dev/null || die "not set up yet - run step 2 first"
+  repo_current || die "the HakiOS checkout is from an older ios-tools - run step 3 (it updates it and remakes the images)"
   [ -f userland/root.apfs ] && [ -f userland/system.apfs ] || die "no images yet - run step 3 first"
   [ -z "$(qemu_pids)" ] || die "HackiOS is already running (Power off VM stops it)"
   pgrep -f 'qemu-system-aarch64.*-M t8030' >/dev/null && die "another iOS VM (qemu-t8030) is running on the same VNC port - stop it first"
@@ -790,7 +1037,7 @@ do_run() {
   QEMU_FORCE=1 QEMU_NET=$([ "$net" = 1 ] && echo 1 || echo) QEMU_SMP="${HACKIOS_SMP:-4}" \
     QEMU_RAM_GB="${HACKIOS_RAM_GB:-7}" QEMU_EFI="$EFI_CODE" QEMU_VARS="$EFI_VARS" \
     CMDLINE="cpus=${HACKIOS_SMP:-4} $(fbscale_arg) ${HACKIOS_CMDLINE:-}" \
-    bash qemu/run-ios.sh "$secs" -display vnc=127.0.0.1:"${HACKIOS_VNC:-0}" "${extra[@]}" || true
+    bash qemu/run-darwin.sh "$secs" -display vnc=127.0.0.1:"${HACKIOS_VNC:-0}" "${extra[@]}" || true
   wait
   if [ -f "$DIR/qemu/.snapshot-failed" ]; then
     rm -f "$DIR/qemu/.snapshot-failed" "$snap" "$snap.key"
@@ -835,7 +1082,7 @@ do_stop() {
 
 do_status() {
   credit
-  [ -d "$DIR/.git" ] && log "installed: kernel repo $(git -C "$DIR" rev-parse --short HEAD), userland repo $(git --git-dir="$DIR/.userland.git" rev-parse --short HEAD 2>/dev/null || echo '?')" || log "not installed (step 2)"
+  [ -d "$DIR/.git" ] && log "installed: HakiOS repository at $(git -C "$DIR" rev-parse --short HEAD), tree version $(awk '/^VERSION =/{v=$3} /^PATCHLEVEL =/{p=$3} /^SUBLEVEL =/{s=$3} END{if (v != "") print v"."p"."s; else print "?"}' "$DIR/VERSION" 2>/dev/null); QEMU boots their prebuilt/hakios-kernel" || log "not installed (step 2)"
   [ -f "$DIR/sysimage/.done-cryptex-app" ] && log "iOS 16.5 files: extracted" || log "iOS 16.5 files: not yet (step 3)"
   [ -f "$DIR/userland/system.apfs" ] && log "images: built" || log "images: not yet (step 3)"
   [ -f "$(snap_file)" ] && log "snapshot: saved $(date -r "$(snap_file)" '+%Y-%m-%d %H:%M'), $(du -h "$(snap_file)" | cut -f1)" || log "snapshot: none"
