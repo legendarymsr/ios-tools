@@ -58,6 +58,16 @@ for f in "${PAYLOAD[@]}"; do
 done
 cp -a "$HERE/launcher-app/app/src/main/assets/payload/LICENSE-xz" "$STAGE/payload/"
 
+# Guest post-install script (run inside macOS, not on the phone).
+# Kept out of PAYLOAD/APK assets so pack-release does not require a rebuild
+# of the launcher just to change this file; the APK version still tracks
+# the module version.
+[ -f "$HERE/guest/debloat-macos.sh" ] || { echo "missing guest/debloat-macos.sh"; exit 1; }
+bash -n "$HERE/guest/debloat-macos.sh" || { echo "guest/debloat-macos.sh failed bash -n"; exit 1; }
+mkdir -p "$STAGE/payload/guest"
+cp -a "$HERE/guest/debloat-macos.sh" "$STAGE/payload/guest/"
+chmod 0755 "$STAGE/payload/guest/debloat-macos.sh"
+
 cp "$OSXKVM/OVMF_CODE_4M.fd" "$OSXKVM/OVMF_VARS-1024x768.fd" "$OSXKVM/OVMF_VARS-1920x1080.fd" \
    "$OSXKVM/OVMF_VARS.fd" "$OSXKVM/OVMF-notes.txt" "$OSXKVM/fetch-macOS-v2.py" \
    "$OSXKVM/CREDITS.md" "$OSXKVM/OpenCore/OpenCore.qcow2" "$OSXKVM/OpenCore/config.plist" \

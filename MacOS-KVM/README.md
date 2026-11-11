@@ -9,9 +9,28 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.5.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.6.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.6: post-install macOS debloat script
+
+- Adds [`guest/debloat-macos.sh`](guest/debloat-macos.sh), run **inside**
+  the macOS guest (not on the phone) after you reach the desktop. It is
+  meant for a TCG guest: it turns off Spotlight indexing, animations, Siri
+  and suggestions, Time Machine local snapshots and automatic backups,
+  automatic software-update checks, Photos/media analysis, Game Center,
+  AirPlay receiver, Handoff advertising, App Store / iCloud / Apple ID
+  background agents (not AuthKit itself), diagnostics submission and
+  personalized ads, and display sleep so the VNC view does not go black.
+- SIP stays on. The script does not modify `/System` or the Signed System
+  Volume. Login, networking, Terminal and Homebrew are left alone.
+- `--revert` puts typical macOS defaults back. `--clear-dock` is optional
+  and can be reverted if the script was able to save the Dock first.
+- The guest already has user-mode networking (`-netdev user` +
+  `virtio-net-pci`, SSH forwarded to host port 2222), so you can fetch
+  the script with curl. In **Setup Assistant**, skip the Apple ID pane
+  with **Set Up Later** (you do not need an Apple ID or the App Store).
 
 ## v1.1.5: immersive full-screen viewer
 
@@ -220,12 +239,13 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 | OpenCore bootloader | `payload/assets/OpenCore.qcow2` + `config.plist` | From OSX-KVM |
 | `fetch-macOS-v2.py` | `payload/assets/` | From OSX-KVM / Acidanthera macrecovery |
 | CREDITS / upstream README | `payload/assets/` | Attribution kept intact |
+| Guest debloat script | `payload/guest/debloat-macos.sh` | Run inside macOS after install; also in the repo at `guest/debloat-macos.sh` |
 | Apple BaseSystem / IPSW | **not shipped** | Downloaded on-device by step 4 (or the optional Sonoma step) |
 
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.5.zip`, reboot.
+   `macos-kvm-launcher-v1.1.6.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -269,9 +289,53 @@ you run an X server (e.g. Termux-X11).
 - A recovery image is roughly 1 GB or more to download, plus the converted
   `.img` (not measured for Tahoe; see below).
 
+### After macOS is installed (debloat)
+
+The guest has user-mode NAT (`-netdev user,id=net0,hostfwd=tcp::2222-:22`
+and `-device virtio-net-pci` in `boot-macos.sh`), so it can reach the
+internet (curl, DNS via QEMU). There is no shared folder; the usual way
+to get the script in is to download it from this repo.
+
+In **Setup Assistant**, you can skip signing in with an Apple ID: choose
+**Set Up Later** (or "Forgot password or don't have an Apple ID?" then
+set up later). The App Store is not needed.
+
+Once you are at the desktop, open **Terminal** and run (pinned to this
+release; SIP stays on):
+
+```
+curl -fsSL https://raw.githubusercontent.com/legendarymsr/ios-tools/macos-kvm-v1.1.6/MacOS-KVM/guest/debloat-macos.sh | sudo bash
+```
+
+Optional: add `--clear-dock` after the script name if you invoke it as a
+file (`sudo ./debloat-macos.sh --clear-dock`). To undo what it changed:
+
+```
+curl -fsSL https://raw.githubusercontent.com/legendarymsr/ios-tools/macos-kvm-v1.1.6/MacOS-KVM/guest/debloat-macos.sh | sudo bash -s -- --revert
+```
+
+The same file is also in the module zip as `payload/guest/debloat-macos.sh`
+and is staged on the phone at `/data/local/osx-kvm/guest/debloat-macos.sh`,
+but the guest cannot read the phone filesystem unless you copy it in some
+other way (for example `scp -P 2222` from the phone, if you have enabled
+Remote Login in the guest).
+
+This script was syntax-checked with `bash -n` on the build host. It has
+**not** been run on a real Mac or in the guest.
+
 ## Verified vs not
 
+**v1.1.6, checked on the build host (x86_64 Debian, 2026-11-11):**
+
+- `guest/debloat-macos.sh` passes `bash -n`. shellcheck was not available
+  on the build host (the package could not be fetched). The script has
+  not been executed on macOS; defaults keys and launchctl labels that
+  are absent are skipped, but behaviour under SIP on Tahoe is untested.
+- Guest networking is already in `boot-macos.sh` (`-netdev user` +
+  `virtio-net-pci`).
+
 **v1.1.5, checked on the build host (x86_64 Debian, 2026-11-11):**
+
 
 - Immersive full-screen flags and IME-inset padding are in the viewer
   activity. A stand-in 1024×768 image was laid out on a 1080×2640 canvas

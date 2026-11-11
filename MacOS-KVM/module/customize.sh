@@ -20,11 +20,18 @@ cp -f "$MODPATH"/payload/*.sh "$MODPATH"/payload/xz-arm64 "$MODPATH"/payload/LIC
 cp -f "$MODPATH"/payload/*.sh "$MODPATH"/payload/xz-arm64 \
   /data/local/osx-kvm/ 2>/dev/null
 cp -af "$MODPATH"/payload/assets/. /data/local/osx-kvm/assets/ 2>/dev/null
+if [ -f "$MODPATH/payload/guest/debloat-macos.sh" ]; then
+  mkdir -p /data/local/osx-kvm/guest /data/local/tmp/macos-kvm/guest
+  cp -f "$MODPATH/payload/guest/debloat-macos.sh" /data/local/osx-kvm/guest/
+  cp -f "$MODPATH/payload/guest/debloat-macos.sh" /data/local/tmp/macos-kvm/guest/
+  chmod 0755 /data/local/osx-kvm/guest/debloat-macos.sh /data/local/tmp/macos-kvm/guest/debloat-macos.sh
+fi
 chmod 0755 /data/local/tmp/macos-kvm/* 2>/dev/null
 chmod 0755 /data/local/osx-kvm/*.sh /data/local/osx-kvm/xz-arm64 /data/local/osx-kvm/assets/fetch-macOS-v2.py 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/macos-kvm"
 ui_print "- OSX-KVM assets staged at /data/local/osx-kvm/assets"
-ui_print "- v@VER@: immersive full-screen viewer; the key bar sits at the bottom above the IME. Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
+ui_print "- Guest debloat script staged at /data/local/osx-kvm/guest (run it inside macOS, not here)"
+ui_print "- v@VER@: post-install macOS debloat script (curl it from inside the guest). Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done. Open 'macOS KVM', grant root, follow the buttons."
