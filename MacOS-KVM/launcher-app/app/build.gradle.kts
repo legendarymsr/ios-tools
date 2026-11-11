@@ -9,8 +9,8 @@ android {
         applicationId = "com.macoskvm.launcher"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "1.1.6"
+        versionCode = 13
+        versionName = "1.1.7"
     }
     buildTypes {
         release { isMinifyEnabled = false }

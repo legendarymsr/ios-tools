@@ -46,7 +46,7 @@ KernelSU/Magisk module that installs a **"macOS KVM"** launcher app and stages
 an [OSX-KVM](https://github.com/kholia/OSX-KVM)-based **macOS 26 (Tahoe)**
 QEMU stack on the phone (macOS 14 Sonoma still selectable).
 
-- Module zip: `macos-kvm-launcher-v1.1.6.zip` (GitHub release `macos-kvm-v1.1.6`)
+- Module zip: `macos-kvm-launcher-v1.1.7.zip` (GitHub release `macos-kvm-v1.1.7`)
 - Guest is **x86_64** on an **aarch64** host → **TCG only, no KVM**. Expect it
   to be **VERY slow**; a full install may not be practical.
 - Bundles OVMF + OpenCore from OSX-KVM; downloads the Tahoe (or Sonoma) recovery on-device

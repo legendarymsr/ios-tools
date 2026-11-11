@@ -9,9 +9,19 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.6.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.7.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.7: viewer no longer crashes when it opens
+
+- v1.1.5 and v1.1.6 closed with "macOS KVM closed because this app has a
+  bug" as soon as the viewer opened (Boot / Open viewer). The full-screen
+  code asked the window for its insets controller before the window had a
+  view, which throws on Android 11 and later. The viewer now sets up its
+  layout first and then hides the system bars; each full-screen step falls
+  back quietly instead of crashing if a device rejects it.
+- Scripts, OpenCore, the recovery image and the macOS disk are unchanged.
 
 ## v1.1.6: post-install macOS debloat script
 
@@ -245,7 +255,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.6.zip`, reboot.
+   `macos-kvm-launcher-v1.1.7.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)

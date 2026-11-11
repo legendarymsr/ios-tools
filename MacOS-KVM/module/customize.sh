@@ -31,7 +31,7 @@ chmod 0755 /data/local/osx-kvm/*.sh /data/local/osx-kvm/xz-arm64 /data/local/osx
 ui_print "- Bundled scripts staged at /data/local/tmp/macos-kvm"
 ui_print "- OSX-KVM assets staged at /data/local/osx-kvm/assets"
 ui_print "- Guest debloat script staged at /data/local/osx-kvm/guest (run it inside macOS, not here)"
-ui_print "- v@VER@: post-install macOS debloat script (curl it from inside the guest). Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
+ui_print "- v@VER@: fixes the viewer crash on open (v1.1.5/v1.1.6). Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done. Open 'macOS KVM', grant root, follow the buttons."
