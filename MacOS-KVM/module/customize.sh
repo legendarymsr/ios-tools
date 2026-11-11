@@ -24,7 +24,7 @@ chmod 0755 /data/local/tmp/macos-kvm/* 2>/dev/null
 chmod 0755 /data/local/osx-kvm/*.sh /data/local/osx-kvm/xz-arm64 /data/local/osx-kvm/assets/fetch-macOS-v2.py 2>/dev/null
 ui_print "- Bundled scripts staged at /data/local/tmp/macos-kvm"
 ui_print "- OSX-KVM assets staged at /data/local/osx-kvm/assets"
-ui_print "- v@VER@: the key bar sits under the macOS screen and does not cover it. Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
+ui_print "- v@VER@: immersive full-screen viewer; the key bar sits at the bottom above the IME. Recovery image and disk are kept. Rebooting stops a running VM. Do not run Boot again unless the VM has already stopped."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 chmod 0644 "$APK" 2>/dev/null
 ui_print "- Done. Open 'macOS KVM', grant root, follow the buttons."

@@ -9,9 +9,19 @@ Built for a rooted Samsung Galaxy Z Flip 4 (SM-F721B / `b4q`, Snapdragon 8+
 Gen 1 / SM8475, aarch64) with kernel root — but any aarch64 rooted Android with
 a working Debian chroot path should be able to run the same scripts.
 
-- Module zip: **`macos-kvm-launcher-v1.1.4.zip`**
+- Module zip: **`macos-kvm-launcher-v1.1.5.zip`**
 - App package: `com.macoskvm.launcher` (label **"macOS KVM"**)
 - App source: [`launcher-app/`](launcher-app/)
+
+## v1.1.5: immersive full-screen viewer
+
+- The viewer hides the Android status and navigation bars (immersive sticky;
+  a swipe from the edge shows them briefly). It also draws into the display
+  cutout. The key strip sits at the bottom of the screen, and the macOS
+  display uses the space that the system bars used to occupy.
+- The soft keyboard still lifts the key strip (`adjustResize` plus IME
+  window insets), so the keys stay just above the IME.
+- Viewer only: OpenCore, the recovery image and the macOS disk are unchanged.
 
 ## v1.1.4: key bar has its own strip; the guest screen is not covered
 
@@ -131,9 +141,10 @@ The launcher app has its own VNC viewer, so no separate VNC app is needed.
   `127.0.0.1:5900` accepts connections (it watches for about 60 s).
 - The viewer retries the connection for about 60 s while QEMU is still starting,
   and shows **Disconnected — tap to reconnect** if the VM stops.
-- Screen is drawn **fit-to-screen** in the area above the key strip
-  (letterboxed); **pinch** to zoom (up to 8×), **two-finger drag** to pan,
-  **Fit** resets.
+- The viewer is **immersive full screen** (status and navigation bars hidden;
+  swipe from the edge to show them briefly). Screen is drawn **fit-to-screen**
+  in the area above the key strip (letterboxed); **pinch** to zoom (up to 8×),
+  **two-finger drag** to pan, **Fit** resets.
 - **Tap** = move there and left click, **one-finger drag** = move the pointer
   (v1.1.3), **long press** = right click. Toolbar **← → ↑ ↓ Enter Space Tab**
   send those keys. A hardware mouse (hover + wheel) also works.
@@ -214,7 +225,7 @@ bundles OVMF, OpenCore, scripts, and the launcher app — not a magic qemu ELF.
 ## Install
 
 1. Open **KernelSU manager → Modules → Install from storage**, pick
-   `macos-kvm-launcher-v1.1.4.zip`, reboot.
+   `macos-kvm-launcher-v1.1.5.zip`, reboot.
 2. **"macOS KVM"** appears in the app drawer. Open it and **grant root**.
 
 (Manual alternative: `adb install launcher-app/dist/macos-kvm-launcher.apk`.)
@@ -260,7 +271,16 @@ you run an X server (e.g. Termux-X11).
 
 ## Verified vs not
 
+**v1.1.5, checked on the build host (x86_64 Debian, 2026-11-11):**
+
+- Immersive full-screen flags and IME-inset padding are in the viewer
+  activity. A stand-in 1024×768 image was laid out on a 1080×2640 canvas
+  with no navigation-bar reserve (key strip at the physical bottom) and
+  again with a bottom inset standing in for the IME. The viewer was not
+  run on a phone, so Android's system-bar hiding is not verified here.
+
 **v1.1.4, checked on the build host (x86_64 Debian, 2026-11-11):**
+
 
 - Layout math (letterbox the framebuffer into the area above a reserved key
   strip; map taps only inside that rectangle) was checked with a stand-in
